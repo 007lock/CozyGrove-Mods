@@ -23,6 +23,24 @@
             "problemMatcher": "$msCompile"
         },
         {
+            "label": "build-AutoFishing",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "build",
+                "${workspaceFolder}/projects/Simon.CozyGrove.AutoFishing/Simon.CozyGrove.AutoFishing.csproj",
+                "-c",
+                "Release",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
             "label": "build-AutoHarvest",
             "command": "dotnet",
             "type": "process",
