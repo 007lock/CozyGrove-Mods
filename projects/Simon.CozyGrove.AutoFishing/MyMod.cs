@@ -6,6 +6,7 @@ using System;
 using System.Collections;
 using System.Linq;
 using System.Collections.Generic;
+using System.Reflection;
 
 namespace Simon.CozyGrove.AutoFishing
 {
@@ -30,6 +31,7 @@ namespace Simon.CozyGrove.AutoFishing
         private AvatarActionFishing _currentFishingAction = null;
         private Vector3 _lastAvatarPos;
         private float _stuckTimer = 0f;
+        private string _pendingEquipId = null;
 
         // Configuration
         private const float CastDistanceMax = 15.0f; 
@@ -81,10 +83,34 @@ namespace Simon.CozyGrove.AutoFishing
             _currentFishingAction = null;
             _stateTimer = 0f;
             _stuckTimer = 0f;
+            _pendingEquipId = null;
+
+            // Cleanup orphaned bobbers from failed manual casts
+            var bobbers = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            foreach (var b in bobbers)
+            {
+                if (b != null && b.name.Contains("animatedBobber") && b.transform.parent == null)
+                {
+                    UnityEngine.Object.Destroy(b);
+                }
+            }
         }
 
         private void UpdateIdle(AvatarController avatar)
         {
+            _stateTimer += Time.deltaTime;
+
+            if (!IsRodEquipped(avatar, out var equippedRod))
+            {
+                if (_stateTimer > 3.0f)
+                {
+                    MelonLogger.Msg("Idle: Rod not detected as equipped. Attempting to equip...");
+                    TryEquipRodOnActivation(avatar);
+                    _stateTimer = 0f;
+                }
+                return;
+            }
+
             _checkTimer += Time.deltaTime;
             if (_checkTimer < CheckInterval) return;
             _checkTimer = 0f;
@@ -128,6 +154,110 @@ namespace Simon.CozyGrove.AutoFishing
             }
         }
 
+        private void TryEquipRodOnActivation(AvatarController avatar)
+        {
+            MelonLogger.Msg("Mod Activation: Scanning inventory for fishing rods for diagnostics...");
+            Item rod = null;
+            var slots = avatar.inventory.slots;
+            
+            for (int i = 0; i < slots.Count; i++)
+            {
+                if (slots[i]?.item != null && IsCorrectRod(slots[i].item, true))
+                {
+                    rod = slots[i].item;
+                    MelonLogger.Msg($"[Diagnostic] Found preferred ocean rod: {rod.collectableItemConfig.id} in slot {i}");
+                    break;
+                }
+            }
+
+            if (rod == null)
+            {
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    if (slots[i]?.item != null && IsFishingRod(slots[i].item))
+                    {
+                        rod = slots[i].item;
+                        MelonLogger.Msg($"[Diagnostic] Found generic rod: {rod.collectableItemConfig.id} in slot {i}");
+                        break;
+                    }
+                }
+            }
+
+            if (rod == null)
+            {
+                MelonLogger.Warning("Mod Activation: No fishing rod found in inventory! AutoFishing might not work.");
+            }
+
+            // Attempt to equip using the game's native hotkey event
+            var inputActions = UnityEngine.Object.FindObjectOfType<InputActionsController>();
+            if (inputActions != null && inputActions.HotkeyEquipFishingRod != null)
+            {
+                MelonLogger.Msg("Invoking native HotkeyEquipFishingRod event...");
+                inputActions.HotkeyEquipFishingRod.Invoke();
+                if (rod != null) _pendingEquipId = rod.collectableItemConfig.id;
+            }
+            else
+            {
+                MelonLogger.Error("Could not find InputActionsController or HotkeyEquipFishingRod event! Native equipping failed.");
+            }
+        }
+
+        private bool IsRodEquipped(AvatarController avatar, out Item equippedRod)
+        {
+            equippedRod = null;
+
+            // 1. Check avatar.activeItem
+            if (avatar.activeItem != null && IsFishingRod(avatar.activeItem))
+            {
+                equippedRod = avatar.activeItem;
+                return true;
+            }
+
+            // 2. Check avatar.inventory.ActiveItem
+            if (avatar.inventory != null && avatar.inventory.ActiveItem != null && IsFishingRod(avatar.inventory.ActiveItem))
+            {
+                equippedRod = avatar.inventory.ActiveItem;
+                return true;
+            }
+
+            // 3. Scan inventory for 'equipped' flag
+            if (avatar.inventory != null)
+            {
+                var slots = avatar.inventory.slots;
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    if (slots[i]?.item != null && slots[i].item.equipped && IsFishingRod(slots[i].item))
+                    {
+                        equippedRod = slots[i].item;
+                        return true;
+                    }
+                }
+            }
+
+            // 4. Diagnostic: Reflection check for private usingItem
+            try
+            {
+                var usingItemField = typeof(AvatarController).GetField("usingItem", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (usingItemField != null)
+                {
+                    var val = usingItemField.GetValue(avatar);
+                    if (val != null)
+                    {
+                        Item hiddenItem = val as Item;
+                        if (hiddenItem != null && IsFishingRod(hiddenItem))
+                        {
+                            MelonLogger.Msg($"[Diagnostic] Found rod in private 'usingItem' field: {hiddenItem.collectableItemConfig.id}");
+                            equippedRod = hiddenItem;
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[Diagnostic] Reflection failed: {ex.Message}"); }
+
+            return false;
+        }
+
         private void UpdateWalkingToFish(AvatarController avatar)
         {
             _stateTimer += Time.deltaTime;
@@ -153,10 +283,7 @@ namespace Simon.CozyGrove.AutoFishing
                 _lastAvatarPos = avatarPos;
             }
 
-            // Transition if:
-            // 1. In range (5m to 15m)
-            // 2. Stuck for 1 second and within 20m
-            // 3. Absolute timeout
+            // Transition if: 1. In range, 2. Stuck, 3. Timeout
             bool inRange = dist2D <= CastDistanceMax;
             bool stuckInRange = _stuckTimer > 1.0f && dist2D < 20.0f;
             bool timeout = _stateTimer > ActionTimeout;
@@ -174,33 +301,25 @@ namespace Simon.CozyGrove.AutoFishing
 
         private void UpdateThrowingRod(AvatarController avatar)
         {
-            Item rod = null;
-            if (avatar.activeItem != null && IsFishingRod(avatar.activeItem))
+            _stateTimer += Time.deltaTime;
+
+            if (!IsRodEquipped(avatar, out var rod))
             {
-                rod = avatar.activeItem;
-            }
-            else
-            {
-                var slots = avatar.inventory.slots;
-                for (int i = 0; i < slots.Count; i++)
+                if (_stateTimer < 5.0f)
                 {
-                    var slot = slots[i];
-                    if (slot != null && slot.item != null && IsFishingRod(slot.item))
+                    if (Mathf.FloorToInt(_stateTimer * 4) % 4 == 0 && _stateTimer % 0.25f < 0.02f)
                     {
-                        rod = slot.item;
-                        MelonLogger.Msg("Equipping fishing rod from inventory...");
-                        avatar.inventory.UseItem(rod, false);
-                        break;
+                        MelonLogger.Msg("Casting: Waiting for rod to be fully detected (sync)...");
                     }
+                    return;
+                }
+                else
+                {
+                    MelonLogger.Warning("Casting: Rod detection timed out. Attempting cast anyway.");
                 }
             }
-
-            if (rod == null)
-            {
-                MelonLogger.Error("No fishing rod found!");
-                ResetState();
-                return;
-            }
+            
+            _pendingEquipId = null;
 
             Vector3 targetPos = _targetFish.transform.position;
             Vector3 avatarPos = avatar.transform.position;
@@ -208,25 +327,9 @@ namespace Simon.CozyGrove.AutoFishing
             try 
             {
                 ItemStorage storage = null;
-                bool isSea = false;
+                bool isSea = !_targetFish.isInPond;
                 
-                // Determine if we are in sea or pond
-                if (_targetFish.isInPond && _targetFish.pond != null)
-                {
-                    MelonLogger.Msg("Fish is in a pond.");
-                    // For ponds, we might still use seaItemStorage or just leave as null if the game handles it
-                    // But usually, ponds are just localized water.
-                    if (World.Instance != null) storage = World.Instance.seaItemStorage; 
-                }
-                else
-                {
-                    MelonLogger.Msg("Fish is in the sea.");
-                    if (World.Instance != null) storage = World.Instance.seaItemStorage;
-                    isSea = true;
-                }
-
-
-                MelonLogger.Msg($"Starting manual cast for fish at {targetPos} (Original Y: {_targetFish.transform.position.y}, Avatar is at {avatarPos})");
+                if (World.Instance != null) storage = World.Instance.seaItemStorage;
 
                 // Ensure avatar is facing the fish
                 Vector3 lookDir = targetPos - avatarPos;
@@ -238,6 +341,8 @@ namespace Simon.CozyGrove.AutoFishing
                     avatar.SetHorizontalFlipping(flipped);
                 }
 
+                MelonLogger.Msg($"Starting manual cast for fish at {targetPos}. Flipped: {flipped}");
+                
                 // Play the casting animation
                 avatar.animationController.PlaySpecialAnimation("fishing/fish cast", null, null, false, false);
 
@@ -304,14 +409,48 @@ namespace Simon.CozyGrove.AutoFishing
             Vector3 finalCastPos = targetPos;
             finalCastPos.x = avatarPos.x - (targetPos.x - avatarPos.x);
 
+            // Ensure character faces the REAL fish during the cast
+            Vector3 lookDir = targetPos - avatarPos;
+            lookDir.y = 0;
+            if (lookDir.sqrMagnitude > 0.001f)
+            {
+                avatar.animationController.SetFacingDirection(lookDir);
+                avatar.SetHorizontalFlipping(lookDir.x < 0);
+            }
+
             MelonLogger.Msg($"Arc arrived. Calling StartFishing with mirrored target {finalCastPos}");
             avatar.StartFishing(bobber, finalCastPos, storage, isSea);
+            
+            // Re-force flipping immediately after StartFishing to prevent frame-one flickers
+            avatar.SetHorizontalFlipping(lookDir.x < 0);
         }
 
         private bool IsFishingRod(Item item)
         {
             if (item == null || item.collectableItemConfig == null) return false;
             return item.collectableItemConfig.IsTagMatch(CollectableItemConfig.TAG_FISHING_ROD, false);
+        }
+
+        private bool IsCorrectRod(Item rod, bool isSea)
+        {
+            if (rod == null || rod.collectableItemConfig == null) return false;
+            if (!IsFishingRod(rod)) return false;
+
+            if (ConfigData.fishing != null)
+            {
+                if (isSea)
+                {
+                    if (!string.IsNullOrEmpty(ConfigData.fishing.fishingRodTagOcean))
+                        return rod.collectableItemConfig.IsTagMatch(ConfigData.fishing.fishingRodTagOcean, false);
+                }
+                else
+                {
+                    if (!string.IsNullOrEmpty(ConfigData.fishing.fishingRodTagPond))
+                        return rod.collectableItemConfig.IsTagMatch(ConfigData.fishing.fishingRodTagPond, false);
+                }
+            }
+
+            return true;
         }
 
         private void UpdateFishing(AvatarController avatar)
@@ -337,6 +476,18 @@ namespace Simon.CozyGrove.AutoFishing
                 
                 if (fishingAction._stateMachine != null)
                 {
+                    // FORCE CORRECT FACING: Override game internal flipping that gets confused by mirrored target
+                    if (_targetFish != null)
+                    {
+                        bool shouldBeFlipped = (_targetFish.transform.position.x - avatar.transform.position.x) < 0;
+                        if (avatar.IsHorizontalFlipped != shouldBeFlipped)
+                        {
+                            avatar.SetHorizontalFlipping(shouldBeFlipped);
+                        }
+                        // Also sync the action's internal flag
+                        fishingAction._isAvatarFlippedHorizontally = shouldBeFlipped;
+                    }
+
                     string stateName = null;
                     try
                     {
