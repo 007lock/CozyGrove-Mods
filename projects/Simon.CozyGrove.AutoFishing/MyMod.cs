@@ -38,10 +38,11 @@ namespace Simon.CozyGrove.AutoFishing
         private const float CastDistanceMin = 5.0f;
         private const float ActionTimeout = 15f;
         private const float CollectDelay = 1.0f;
-
         public override void OnUpdate()
         {
             if (SceneManager.GetActiveScene().name != "Game") return;
+
+            var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
 
             // Toggle logic - Use KeyCode.F as requested
             if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.F))
@@ -49,11 +50,10 @@ namespace Simon.CozyGrove.AutoFishing
                 _isActive = !_isActive;
                 if (!_isActive) ResetState();
                 MelonLogger.Msg($"AutoFishing is now {(_isActive ? "ON" : "OFF")}");
+                ShowBark(avatar, $"AutoFishing is now {(_isActive ? "ON" : "OFF")}");
             }
 
             if (!_isActive) return;
-
-            var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
             if (avatar == null) return;
 
             switch (_currentState)
@@ -261,6 +261,13 @@ namespace Simon.CozyGrove.AutoFishing
         private void UpdateWalkingToFish(AvatarController avatar)
         {
             _stateTimer += Time.deltaTime;
+
+            // Show tracking status
+            if (avatar != null && avatar.speechBubble != null && !avatar.speechBubble.isShown)
+            {
+                ShowBark(avatar, "AutoFishing: ON");
+            }
+
             if (_targetFish == null || !_targetFish.gameObject.activeInHierarchy)
             {
                 MelonLogger.Msg("Fish lost, resetting...");
@@ -302,6 +309,12 @@ namespace Simon.CozyGrove.AutoFishing
         private void UpdateThrowingRod(AvatarController avatar)
         {
             _stateTimer += Time.deltaTime;
+
+            // Show tracking status
+            if (avatar != null && avatar.speechBubble != null && !avatar.speechBubble.isShown)
+            {
+                ShowBark(avatar, "AutoFishing: ON");
+            }
 
             if (!IsRodEquipped(avatar, out var rod))
             {
@@ -456,7 +469,12 @@ namespace Simon.CozyGrove.AutoFishing
         private void UpdateFishing(AvatarController avatar)
         {
             _stateTimer += Time.deltaTime;
-            
+
+            // Show tracking status
+            if (avatar != null && avatar.speechBubble != null && !avatar.speechBubble.isShown)
+            {
+                ShowBark(avatar, "AutoFishing: ON");
+            }
             var currentAction = avatar.actionsController.GetCurrent();
             if (currentAction == null)
             {
@@ -525,7 +543,12 @@ namespace Simon.CozyGrove.AutoFishing
         private void UpdateCollecting(AvatarController avatar)
         {
             _stateTimer += Time.deltaTime;
+
             if (_stateTimer < CollectDelay) return;
+
+            // Wait for user to manually dismiss any popups (e.g. badge rewards)
+            if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return;
+            if (avatar != null && avatar.speechBubble != null && avatar.speechBubble.isShown) return;
 
             var doobers = UnityEngine.Object.FindObjectsOfType<Doober>();
             int collected = 0;
@@ -540,6 +563,14 @@ namespace Simon.CozyGrove.AutoFishing
 
             if (collected > 0) MelonLogger.Msg($"Collected {collected} doober(s)");
             ResetState();
+        }
+
+        private void ShowBark(AvatarController avatar, string text)
+        {
+            if (avatar != null && avatar.speechBubble != null)
+            {
+                avatar.speechBubble.Show(text, SpriteInfo.Invalid, 2.0f);
+            }
         }
     }
 }

@@ -6,6 +6,7 @@ using MelonLoader;
 using UnityEngine;
 using Il2Cpp;
 using Il2CppSpryFox.Common;
+using UnityEngine.SceneManagement;
 
 namespace Simon.CozyGrove.AutoHarvest
 {
@@ -17,10 +18,18 @@ namespace Simon.CozyGrove.AutoHarvest
 
         public override void OnUpdate()
         {
+            if (SceneManager.GetActiveScene().name != "Game") return;
+
+            if (_avatar == null)
+            {
+                _avatar = GameObject.FindObjectOfType<AvatarController>();
+            }
+
             if (Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.H))
             {
                 _isEnabled = !_isEnabled;
                 MelonLogger.Msg($"Auto Harvest: {(_isEnabled ? "Enabled" : "Disabled")}");
+                ShowBark(_avatar, $"AutoHarvest: {(_isEnabled ? "Enabled" : "Disabled")}");
 
                 if (_isEnabled)
                 {
@@ -38,13 +47,14 @@ namespace Simon.CozyGrove.AutoHarvest
         {
             while (_isEnabled)
             {
-                if (_avatar == null)
-                {
-                    _avatar = GameObject.FindObjectOfType<AvatarController>();
-                }
-
                 if (_avatar != null && !IsAvatarBusy())
                 {
+                    // Show tracking status
+                    if (_avatar.speechBubble != null && !_avatar.speechBubble.isShown)
+                    {
+                        ShowBark(_avatar, "AutoHarvest: ON");
+                    }
+
                     var target = FindNearestTarget();
                     if (target != null)
                     {
@@ -59,6 +69,10 @@ namespace Simon.CozyGrove.AutoHarvest
         private bool IsAvatarBusy()
         {
             if (_avatar == null || _avatar.actionsController == null) return true;
+
+            // Wait for user to manually dismiss any popups (e.g. bag full)
+            if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
+
             return _avatar.actionsController.HasAnyActions();
         }
 
@@ -66,21 +80,7 @@ namespace Simon.CozyGrove.AutoHarvest
         {
             var collectables = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<CollectableItem>())
                 .Where(c => c.gameObject.activeInHierarchy)
-                .Where(c => {
-                    if (c.config == null) return false;
-                    
-                    // Check if it's a harvestable
-                    if (c.config.IsTypeMatch(CollectableItemType.harvestable))
-                    {
-                        var harvestable = c.GetComponent<HarvestableItem>();
-                        return harvestable != null && harvestable.harvestableState != null && 
-                               harvestable.harvestableState.hasLoot && harvestable.harvestableState.hasMetConditionals;
-                    }
-                    
-                    // Otherwise it's a regular collectable
-                    return c.CanBePickedUp && !c.GetObjectTags().Has(CollectableItemConfig.TAG_DECORATION_TAG);
-                })
-                .Where(c => HasProperTool(c))
+                .Where(c => IsTargetValid(c))
                 .Select(c => c.gameObject);
 
             var doobers = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<Doober>())
@@ -106,6 +106,22 @@ namespace Simon.CozyGrove.AutoHarvest
             }
 
             return nearest;
+        }
+
+        private bool IsTargetValid(CollectableItem c)
+        {
+            if (c == null || c.config == null) return false;
+            
+            // Check if it's a harvestable
+            if (c.config.IsTypeMatch(CollectableItemType.harvestable))
+            {
+                var harvestable = c.GetComponent<HarvestableItem>();
+                return harvestable != null && harvestable.harvestableState != null && 
+                       harvestable.harvestableState.hasLoot && harvestable.harvestableState.hasMetConditionals;
+            }
+            
+            // Otherwise it's a regular collectable
+            return c.CanBePickedUp && !c.GetObjectTags().Has(CollectableItemConfig.TAG_DECORATION_TAG) && HasProperTool(c);
         }
 
         private bool HasProperTool(CollectableItem collectable)
@@ -193,6 +209,14 @@ namespace Simon.CozyGrove.AutoHarvest
             while (IsAvatarBusy())
             {
                 yield return (object)null;
+            }
+        }
+
+        private void ShowBark(AvatarController avatar, string text)
+        {
+            if (avatar != null && avatar.speechBubble != null)
+            {
+                avatar.speechBubble.Show(text, SpriteInfo.Invalid, 2.0f);
             }
         }
     }

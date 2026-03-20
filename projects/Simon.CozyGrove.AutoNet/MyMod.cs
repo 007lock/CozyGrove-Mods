@@ -4,28 +4,15 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using System;
 using System.Linq;
+using System.Collections;
 
 namespace Simon.CozyGrove.AutoNet
 {
     public class MyMod : MelonMod
     {
-        private float _checkTimer = 0f;
-        private const float CheckInterval = 0.5f;
         private bool _isActive = false;
-        
-        // State machine enum
-        private enum AutoNetState
-        {
-            Idle,
-            WalkingToCritter,
-            ThrowingNet,
-            Collecting
-        }
-
-        private AutoNetState _currentState = AutoNetState.Idle;
         private Critter _targetCritter = null;
-        private float _stateTimer = 0f;
-        private IAvatarAction _currentCatchAction = null;
+        private object _coroInstance = null;
 
         // Configuration
         private const float CatchDistance = 2.0f; // Distance from critter to trigger net throw
@@ -36,7 +23,9 @@ namespace Simon.CozyGrove.AutoNet
         {
             if (SceneManager.GetActiveScene().name != "Game") return;
 
-            // Toggle logic
+            var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+
+            // Toggle logic (Ctrl+T)
             if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.T))
             {
                 _isActive = !_isActive;
@@ -45,45 +34,74 @@ namespace Simon.CozyGrove.AutoNet
                     ResetState();
                 }
                 MelonLogger.Msg($"AutoNet is now {(_isActive ? "ON" : "OFF")}");
+                ShowBark(avatar, $"AutoNet: {(_isActive ? "ON" : "OFF")}");
             }
 
             if (!_isActive) return;
 
-            var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
-            if (avatar == null) return;
-
-            switch (_currentState)
+            // Start coroutine if not running
+            if (_coroInstance == null)
             {
-                case AutoNetState.Idle:
-                    UpdateIdle(avatar);
-                    break;
-                case AutoNetState.WalkingToCritter:
-                    UpdateWalkingToCritter(avatar);
-                    break;
-                case AutoNetState.ThrowingNet:
-                    UpdateThrowingNet(avatar);
-                    break;
-                case AutoNetState.Collecting:
-                    UpdateCollecting(avatar);
-                    break;
+                _coroInstance = MelonCoroutines.Start(AutoNetCoro());
             }
         }
 
         private void ResetState()
         {
-            _currentState = AutoNetState.Idle;
+            if (_coroInstance != null)
+            {
+                MelonCoroutines.Stop(_coroInstance);
+                _coroInstance = null;
+            }
             _targetCritter = null;
-            _currentCatchAction = null;
-            _stateTimer = 0f;
         }
 
-        private void UpdateIdle(AvatarController avatar)
+        private IEnumerator AutoNetCoro()
         {
-            _checkTimer += Time.deltaTime;
-            if (_checkTimer < CheckInterval) return;
-            _checkTimer = 0f;
+            while (true)
+            {
+                if (!_isActive || SceneManager.GetActiveScene().name != "Game")
+                {
+                    yield return new WaitForSeconds(1f);
+                    continue;
+                }
 
-            // Find nearest active critter
+                var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+                if (avatar == null)
+                {
+                    yield return new WaitForSeconds(1f);
+                    continue;
+                }
+
+                if (IsAvatarBusy(avatar))
+                {
+                    yield return new WaitForSeconds(0.5f);
+                    continue;
+                }
+
+                _targetCritter = FindNearestCritter(avatar);
+                if (_targetCritter != null)
+                {
+                    yield return HandleTarget(avatar, _targetCritter);
+                }
+
+                yield return new WaitForSeconds(0.5f);
+            }
+        }
+
+        private bool IsAvatarBusy(AvatarController avatar)
+        {
+            if (avatar == null || avatar.actionsController == null) return true;
+
+            // Wait for user to manually dismiss any popups
+            if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
+            if (avatar.speechBubble != null && avatar.speechBubble.isShown) return true;
+
+            return avatar.actionsController.HasAnyActions();
+        }
+
+        private Critter FindNearestCritter(AvatarController avatar)
+        {
             var critters = UnityEngine.Object.FindObjectsOfType<Critter>();
             Critter bestCritter = null;
             float bestDistSq = float.MaxValue;
@@ -101,136 +119,117 @@ namespace Simon.CozyGrove.AutoNet
                     }
                 }
             }
+            return bestCritter;
+        }
 
-            if (bestCritter != null)
+        private IEnumerator HandleTarget(AvatarController avatar, Critter target)
+        {
+            // Walk to target if too far
+            float dist = Vector3.Distance(avatar.transform.position, target.transform.position);
+            if (dist > CatchDistance)
             {
-                _targetCritter = bestCritter;
-                _currentState = AutoNetState.WalkingToCritter;
-                _stateTimer = 0f;
-                MelonLogger.Msg($"Found critter, tracking...");
-                
-                // Track func for WalkToPosition
-                Func<Vector3> trackFunc = new Func<Vector3>(() => 
-                {
-                    if (_targetCritter != null && _targetCritter.gameObject.activeInHierarchy)
-                        return _targetCritter.transform.position;
+                // Follow critter while walking
+                Func<Vector3> trackFunc = () => {
+                    if (target != null && target.gameObject.activeInHierarchy)
+                        return target.transform.position;
                     return avatar.transform.position;
-                });
+                };
 
-                // Tell avatar to walk towards it
-                avatar.WalkToPosition(_targetCritter.transform.position, true, false, CatchDistance * 0.8f, trackFunc);
+                avatar.WalkToPosition(target.transform.position, true, false, CatchDistance * 0.8f, trackFunc);
+                
+                float timeout = CatchTimeout;
+                while (target != null && target.gameObject.activeInHierarchy && 
+                       Vector3.Distance(avatar.transform.position, target.transform.position) > CatchDistance && timeout > 0)
+                {
+                    if (!_isActive) yield break;
+                    
+                    // Show tracking status
+                    if (!avatar.speechBubble.isShown) ShowBark(avatar, "AutoNet: ON");
+                    
+                    timeout -= Time.deltaTime;
+                    yield return null;
+                }
             }
-        }
 
-        private void UpdateWalkingToCritter(AvatarController avatar)
-        {
-            _stateTimer += Time.deltaTime;
+            if (target == null || !target.gameObject.activeInHierarchy) yield break;
 
-            if (_targetCritter == null || !_targetCritter.gameObject.activeInHierarchy || _stateTimer > CatchTimeout)
+            // Check tool
+            if (!HasNet(avatar))
             {
-                MelonLogger.Msg($"Lost critter or timed out while walking.");
-                ResetState();
-                return;
+                ShowBark(avatar, "No Net!");
+                yield break;
             }
 
-            float dist = Vector3.Distance(avatar.transform.position, _targetCritter.transform.position);
-            if (dist <= CatchDistance)
+            // Ensure net is equipped
+            if (avatar.activeItem == null || !avatar.activeItem.isNet)
             {
-                MelonLogger.Msg($"In range ({dist:F1}m), throwing net!");
-                ThrowNetAtCritter(avatar, _targetCritter);
-            }
-        }
-
-        private void ThrowNetAtCritter(AvatarController avatar, Critter critter)
-        {
-            // Use active net or find one in inventory
-            var activeItem = avatar.activeItem;
-            if (activeItem == null || !activeItem.isNet)
-            {
-                // Search slots in PlayerInventory (which inherits from InventoryState)
                 Item netItem = null;
                 var slots = avatar.inventory.slots;
                 for (int i = 0; i < slots.Count; i++)
                 {
-                    var slot = slots[i];
-                    if (slot != null && slot.item != null && slot.item.isNet)
+                    if (slots[i] != null && slots[i].item != null && slots[i].item.isNet)
                     {
-                        netItem = slot.item;
+                        netItem = slots[i].item;
                         break;
                     }
                 }
-
                 if (netItem != null)
                 {
-                    MelonLogger.Msg("Equipping net from inventory...");
                     avatar.inventory.UseItem(netItem, false);
-                    activeItem = netItem;
-                }
-                else
-                {
-                    MelonLogger.Error("No net found in hands or inventory!");
-                    ResetState();
-                    return;
+                    yield return new WaitForSeconds(0.5f); // Wait for equipment
                 }
             }
 
-            // Estimate throw force
-            Vector3 throwForce = (critter.transform.position - avatar.transform.position).normalized * 5f;
-
-            // Instantiate and queue the catch action
-            var catchAction = new AvatarActionCritterCatching(avatar, activeItem, throwForce);
-            
-            // Note: If you get a conversion error here, it's likely an Il2Cpp mismatch. 
-            // In most MelonLoader environments, casting via .Cast<IAvatarAction>() is safer.
-            avatar.actionsController.Add(catchAction.Cast<IAvatarAction>());
-            
-            _currentCatchAction = catchAction.Cast<IAvatarAction>();
-            _currentState = AutoNetState.ThrowingNet;
-            _stateTimer = 0f;
-        }
-
-        private void UpdateThrowingNet(AvatarController avatar)
-        {
-            _stateTimer += Time.deltaTime;
-
-            // Check if the current action is still our catch action
-            var current = avatar.actionsController.GetCurrent();
-            
-            // In Il2Cpp, comparing objects directly (current == _currentCatchAction) is usually fine
-            // but we also check if current is null (action finished).
-            bool isStillRunning = (current != null && current.Pointer == _currentCatchAction.Pointer);
-
-            if (!isStillRunning || _stateTimer > 8f) 
+            // Interact using the high-level method if possible, otherwise manual throw
+            var harvestable = target.GetComponent<HarvestableItem>();
+            if (harvestable != null)
             {
-                MelonLogger.Msg("Catch action finished, collecting rewards...");
-                _currentState = AutoNetState.Collecting;
-                _stateTimer = 0f;
+                harvestable.Interact(avatar, null, null);
             }
-        }
+            else
+            {
+                // Manual catch action as fallback
+                Vector3 throwForce = (target.transform.position - avatar.transform.position).normalized * 5f;
+                var catchAction = new AvatarActionCritterCatching(avatar, avatar.activeItem, throwForce);
+                avatar.actionsController.Add(catchAction.Cast<IAvatarAction>());
+            }
 
-        private void UpdateCollecting(AvatarController avatar)
-        {
-            _stateTimer += Time.deltaTime;
+            // Wait for action to finish and possible doobers to spawn
+            yield return new WaitForSeconds(1.5f);
+            while (IsAvatarBusy(avatar)) yield return null;
+            yield return new WaitForSeconds(0.5f);
 
-            // Wait for doobers to spawn
-            if (_stateTimer < CollectDelay) return;
-
+            // Collect doobers
             var doobers = UnityEngine.Object.FindObjectsOfType<Doober>();
-            int collected = 0;
             foreach (var doober in doobers)
             {
                 if (doober != null && doober.gameObject.activeInHierarchy)
                 {
-                    // Pickup is often internal/private in dump but unhollower makes it public or we use it anyway
                     doober.Pickup();
-                    collected++;
                 }
             }
+        }
 
-            if (collected > 0)
-                MelonLogger.Msg($"Auto-collected {collected} doober(s)");
+        private bool HasNet(AvatarController avatar)
+        {
+            if (avatar == null || avatar.inventory == null) return false;
+            foreach (var slot in avatar.inventory.slots)
+            {
+                if (slot != null && slot.item != null && slot.item.isNet)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
-            ResetState();
+        private void ShowBark(AvatarController avatar, string text)
+        {
+            if (avatar != null && avatar.speechBubble != null)
+            {
+                // durationSeconds = 2.0f for a quick notification
+                avatar.speechBubble.Show(text, SpriteInfo.Invalid, 2.0f);
+            }
         }
     }
 }
