@@ -15,6 +15,27 @@ namespace Simon.CozyGrove.AutoFishing
         private float _checkTimer = 0f;
         private const float CheckInterval = 0.5f;
         private bool _isActive = false;
+        private AvatarController _cachedAvatar = null;
+        private bool _isInGameScene = false;
+
+        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
+        {
+            _isInGameScene = (sceneName == "Game");
+            _cachedAvatar = null;
+            if (!_isInGameScene)
+            {
+                ResetState();
+            }
+        }
+
+        private AvatarController GetAvatar()
+        {
+            if (_cachedAvatar == null && _isInGameScene)
+            {
+                _cachedAvatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+            }
+            return _cachedAvatar;
+        }
 
         private enum FishingState
         {
@@ -40,9 +61,10 @@ namespace Simon.CozyGrove.AutoFishing
         private const float CollectDelay = 1.0f;
         public override void OnUpdate()
         {
-            if (SceneManager.GetActiveScene().name != "Game") return;
+            if (!_isInGameScene) return;
 
-            var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+            var avatar = GetAvatar();
+            if (avatar == null) return;
 
             // Toggle logic - Use KeyCode.F as requested
             if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.F))
@@ -189,7 +211,7 @@ namespace Simon.CozyGrove.AutoFishing
             }
 
             // Attempt to equip using the game's native hotkey event
-            var inputActions = UnityEngine.Object.FindObjectOfType<InputActionsController>();
+            var inputActions = GetAvatar()?.GetComponent<InputActionsController>() ?? UnityEngine.Object.FindObjectOfType<InputActionsController>();
             if (inputActions != null && inputActions.HotkeyEquipFishingRod != null)
             {
                 MelonLogger.Msg("Invoking native HotkeyEquipFishingRod event...");

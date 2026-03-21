@@ -14,22 +14,45 @@ namespace Simon.CozyGrove.AutoHarvest
     {
         private bool _isEnabled = false;
         private Coroutine _autoHarvestCoroutine;
-        private AvatarController _avatar;
+        private AvatarController _cachedAvatar = null;
+        private bool _isInGameScene = false;
+
+        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
+        {
+            _isInGameScene = (sceneName == "Game");
+            _cachedAvatar = null;
+            if (!_isInGameScene)
+            {
+                _isEnabled = false;
+                if (_autoHarvestCoroutine != null)
+                {
+                    MelonCoroutines.Stop(_autoHarvestCoroutine);
+                    _autoHarvestCoroutine = null;
+                }
+            }
+        }
+
+        private AvatarController GetAvatar()
+        {
+            if (_cachedAvatar == null && _isInGameScene)
+            {
+                _cachedAvatar = GameObject.FindObjectOfType<AvatarController>();
+            }
+            return _cachedAvatar;
+        }
 
         public override void OnUpdate()
         {
-            if (SceneManager.GetActiveScene().name != "Game") return;
+            if (!_isInGameScene) return;
 
-            if (_avatar == null)
-            {
-                _avatar = GameObject.FindObjectOfType<AvatarController>();
-            }
+            var avatar = GetAvatar();
+            if (avatar == null) return;
 
             if (Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.H))
             {
                 _isEnabled = !_isEnabled;
                 MelonLogger.Msg($"Auto Harvest: {(_isEnabled ? "Enabled" : "Disabled")}");
-                ShowBark(_avatar, $"AutoHarvest: {(_isEnabled ? "Enabled" : "Disabled")}");
+                ShowBark(avatar, $"AutoHarvest: {(_isEnabled ? "Enabled" : "Disabled")}");
 
                 if (_isEnabled)
                 {
@@ -45,20 +68,21 @@ namespace Simon.CozyGrove.AutoHarvest
 
         private IEnumerator AutoHarvestCoro()
         {
-            while (_isEnabled)
+            while (_isEnabled && _isInGameScene)
             {
-                if (_avatar != null && !IsAvatarBusy())
+                var avatar = GetAvatar();
+                if (avatar != null && !IsAvatarBusy(avatar))
                 {
                     // Show tracking status
-                    if (_avatar.speechBubble != null && !_avatar.speechBubble.isShown)
+                    if (avatar.speechBubble != null && !avatar.speechBubble.isShown)
                     {
-                        ShowBark(_avatar, "AutoHarvest: ON");
+                        ShowBark(avatar, "AutoHarvest: ON");
                     }
 
-                    var target = FindNearestTarget();
+                    var target = FindNearestTarget(avatar);
                     if (target != null)
                     {
-                        yield return HandleTarget(target);
+                        yield return HandleTarget(target, avatar);
                     }
                 }
 
@@ -66,21 +90,21 @@ namespace Simon.CozyGrove.AutoHarvest
             }
         }
 
-        private bool IsAvatarBusy()
+        private bool IsAvatarBusy(AvatarController avatar)
         {
-            if (_avatar == null || _avatar.actionsController == null) return true;
+            if (avatar == null || avatar.actionsController == null) return true;
 
             // Wait for user to manually dismiss any popups (e.g. bag full)
             if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
 
-            return _avatar.actionsController.HasAnyActions();
+            return avatar.actionsController.HasAnyActions();
         }
 
-        private GameObject FindNearestTarget()
+        private GameObject FindNearestTarget(AvatarController avatar)
         {
             var collectables = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<CollectableItem>())
                 .Where(c => c.gameObject.activeInHierarchy)
-                .Where(c => IsTargetValid(c))
+                .Where(c => IsTargetValid(c, avatar))
                 .Select(c => c.gameObject);
 
             var doobers = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<Doober>())
@@ -93,7 +117,7 @@ namespace Simon.CozyGrove.AutoHarvest
 
             GameObject nearest = null;
             float minDistance = float.MaxValue;
-            Vector3 avatarPos = _avatar.transform.position;
+            Vector3 avatarPos = avatar.transform.position;
 
             foreach (var target in allTargets)
             {
@@ -108,7 +132,7 @@ namespace Simon.CozyGrove.AutoHarvest
             return nearest;
         }
 
-        private bool IsTargetValid(CollectableItem c)
+        private bool IsTargetValid(CollectableItem c, AvatarController avatar)
         {
             if (c == null || c.config == null) return false;
             
@@ -121,12 +145,12 @@ namespace Simon.CozyGrove.AutoHarvest
             }
             
             // Otherwise it's a regular collectable
-            return c.CanBePickedUp && !c.GetObjectTags().Has(CollectableItemConfig.TAG_DECORATION_TAG) && HasProperTool(c);
+            return c.CanBePickedUp && !c.GetObjectTags().Has(CollectableItemConfig.TAG_DECORATION_TAG) && HasProperTool(c, avatar);
         }
 
-        private bool HasProperTool(CollectableItem collectable)
+        private bool HasProperTool(CollectableItem collectable, AvatarController avatar)
         {
-            if (_avatar == null || _avatar.inventory == null || collectable.config == null) return false;
+            if (avatar == null || avatar.inventory == null || collectable.config == null) return false;
 
             var config = collectable.config;
             if (config.requiresTool == null || config.requiresTool.Length == 0)
@@ -136,7 +160,7 @@ namespace Simon.CozyGrove.AutoHarvest
 
             foreach (var toolId in config.requiresTool)
             {
-                foreach (var slot in _avatar.inventory.slots)
+                foreach (var slot in avatar.inventory.slots)
                 {
                     if (slot != null && slot.item != null && slot.item.configID.Value == toolId)
                     {
@@ -148,23 +172,23 @@ namespace Simon.CozyGrove.AutoHarvest
             return false;
         }
 
-        private bool HasProperTool(GameObject target)
+        private bool HasProperTool(GameObject target, AvatarController avatar)
         {
             var collectable = target.GetComponent<CollectableItem>();
-            if (collectable != null) return HasProperTool(collectable);
+            if (collectable != null) return HasProperTool(collectable, avatar);
             return true; // Doobers don't require tools
         }
 
-        private IEnumerator HandleTarget(GameObject target)
+        private IEnumerator HandleTarget(GameObject target, AvatarController avatar)
         {
             // Walk to target if too far
-            float dist = Vector3.Distance(_avatar.transform.position, target.transform.position);
+            float dist = Vector3.Distance(avatar.transform.position, target.transform.position);
             if (dist > 1.5f)
             {
-                _avatar.WalkToPosition(target.transform.position, true, true);
+                avatar.WalkToPosition(target.transform.position, true, true);
                 
                 float timeout = 5f;
-                while (Vector3.Distance(_avatar.transform.position, target.transform.position) > 1.5f && timeout > 0)
+                while (Vector3.Distance(avatar.transform.position, target.transform.position) > 1.5f && timeout > 0)
                 {
                     if (!_isEnabled) yield break;
                     timeout -= Time.deltaTime;
@@ -173,7 +197,7 @@ namespace Simon.CozyGrove.AutoHarvest
             }
 
             // Double check tool again just in case it broke or was dropped
-            if (!HasProperTool(target)) yield break;
+            if (!HasProperTool(target, avatar)) yield break;
 
             // Interact
             var harvestable = target.GetComponent<HarvestableItem>();
@@ -182,11 +206,11 @@ namespace Simon.CozyGrove.AutoHarvest
             if (harvestable != null && harvestable.harvestableState != null && harvestable.harvestableState.hasLoot)
             {
                 // Prioritize harvest if it has loot
-                harvestable.Interact(_avatar, null, null);
+                harvestable.Interact(avatar, null, null);
             }
             else if (collectable != null)
             {
-                collectable.Interact(_avatar, null);
+                collectable.Interact(avatar, null);
             }
             else
             {
@@ -206,7 +230,7 @@ namespace Simon.CozyGrove.AutoHarvest
             yield return new WaitForSeconds(0.5f);
             
             // Wait while busy
-            while (IsAvatarBusy())
+            while (IsAvatarBusy(avatar))
             {
                 yield return (object)null;
             }

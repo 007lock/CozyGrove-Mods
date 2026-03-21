@@ -3,7 +3,7 @@ using MelonLoader;
 [assembly: MelonInfo(
     typeof(Simon.CozyGrove.AutoHarvest.MyMod),
     "Simon.CozyGrove.AutoHarvest",
-    "1.0.1",
+    "1.0.2",
     "Simon",
     "")]
 [assembly: MelonGame("Spry Fox", "Cozy Grove")]
