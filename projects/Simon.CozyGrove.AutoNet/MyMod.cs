@@ -13,17 +13,39 @@ namespace Simon.CozyGrove.AutoNet
         private bool _isActive = false;
         private Critter _targetCritter = null;
         private object _coroInstance = null;
+        private AvatarController _cachedAvatar = null;
+        private bool _isInGameScene = false;
 
         // Configuration
         private const float CatchDistance = 2.0f; // Distance from critter to trigger net throw
         private const float CatchTimeout = 10f; // Max time to spend trying to catch one critter
         private const float CollectDelay = 1.0f; // Time to wait for doobers to spawn before collecting
 
+        public override void OnSceneWasLoaded(int buildIndex, string sceneName)
+        {
+            _isInGameScene = (sceneName == "Game");
+            _cachedAvatar = null;
+            if (!_isInGameScene)
+            {
+                ResetState();
+            }
+        }
+
+        private AvatarController GetAvatar()
+        {
+            if (_cachedAvatar == null && _isInGameScene)
+            {
+                _cachedAvatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+            }
+            return _cachedAvatar;
+        }
+
         public override void OnUpdate()
         {
-            if (SceneManager.GetActiveScene().name != "Game") return;
+            if (!_isInGameScene) return;
 
-            var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+            var avatar = GetAvatar();
+            if (avatar == null) return;
 
             // Toggle logic (Ctrl+T)
             if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.T))
@@ -60,13 +82,13 @@ namespace Simon.CozyGrove.AutoNet
         {
             while (true)
             {
-                if (!_isActive || SceneManager.GetActiveScene().name != "Game")
+                if (!_isActive || !_isInGameScene)
                 {
                     yield return new WaitForSeconds(1f);
                     continue;
                 }
 
-                var avatar = UnityEngine.Object.FindObjectOfType<AvatarController>();
+                var avatar = GetAvatar();
                 if (avatar == null)
                 {
                     yield return new WaitForSeconds(1f);
