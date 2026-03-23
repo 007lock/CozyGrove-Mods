@@ -141,7 +141,7 @@ namespace Simon.CozyGrove.AutoHarvest
             {
                 var harvestable = c.GetComponent<HarvestableItem>();
                 return harvestable != null && harvestable.harvestableState != null && 
-                       harvestable.harvestableState.hasLoot && harvestable.harvestableState.hasMetConditionals;
+                       harvestable.harvestableState.hasLoot && harvestable.harvestableState.hasMetConditionals && HasProperTool(c, avatar);
             }
             
             // Otherwise it's a regular collectable
@@ -158,18 +158,38 @@ namespace Simon.CozyGrove.AutoHarvest
                 return true;
             }
 
-            foreach (var toolId in config.requiresTool)
+            foreach (var reqToolId in config.requiresTool)
             {
+                var reqInfo = GetToolInfo(reqToolId);
+
                 foreach (var slot in avatar.inventory.slots)
                 {
-                    if (slot != null && slot.item != null && slot.item.configID.Value == toolId)
+                    if (slot != null && slot.item != null)
                     {
-                        return true;
+                        var playerToolInfo = GetToolInfo(slot.item.configID.Value);
+                        if (playerToolInfo.type == reqInfo.type && playerToolInfo.level >= reqInfo.level)
+                        {
+                            return true;
+                        }
                     }
                 }
             }
 
             return false;
+        }
+
+        private (string type, int level) GetToolInfo(string toolId)
+        {
+            if (string.IsNullOrEmpty(toolId)) return (null, 0);
+
+            // Standard format: tool_pickaxe_1
+            int lastUnderscore = toolId.LastIndexOf('_');
+            if (lastUnderscore > 0 && int.TryParse(toolId.Substring(lastUnderscore + 1), out int lvl))
+            {
+                return (toolId.Substring(0, lastUnderscore), lvl);
+            }
+
+            return (toolId, 1); // Default to level 1
         }
 
         private bool HasProperTool(GameObject target, AvatarController avatar)

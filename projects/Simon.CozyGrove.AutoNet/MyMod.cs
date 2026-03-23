@@ -5,6 +5,7 @@ using UnityEngine.SceneManagement;
 using System;
 using System.Linq;
 using System.Collections;
+using System.Reflection;
 
 namespace Simon.CozyGrove.AutoNet
 {
@@ -101,6 +102,14 @@ namespace Simon.CozyGrove.AutoNet
                     continue;
                 }
 
+                // Ensure net is equipped while idle
+                if (!HasNetEquipped(avatar))
+                {
+                    TryEquipNet(avatar);
+                    yield return new WaitForSeconds(1.0f); // Wait for equipment
+                    continue; 
+                }
+
                 _targetCritter = FindNearestCritter(avatar);
                 if (_targetCritter != null)
                 {
@@ -173,33 +182,15 @@ namespace Simon.CozyGrove.AutoNet
                 }
             }
 
+            // Use the target already walked to
             if (target == null || !target.gameObject.activeInHierarchy) yield break;
 
-            // Check tool
-            if (!HasNet(avatar))
+            // Ensure net is equipped before action
+            if (!HasNetEquipped(avatar))
             {
-                ShowBark(avatar, "No Net!");
-                yield break;
-            }
-
-            // Ensure net is equipped
-            if (avatar.activeItem == null || !avatar.activeItem.isNet)
-            {
-                Item netItem = null;
-                var slots = avatar.inventory.slots;
-                for (int i = 0; i < slots.Count; i++)
-                {
-                    if (slots[i] != null && slots[i].item != null && slots[i].item.isNet)
-                    {
-                        netItem = slots[i].item;
-                        break;
-                    }
-                }
-                if (netItem != null)
-                {
-                    avatar.inventory.UseItem(netItem, false);
-                    yield return new WaitForSeconds(0.5f); // Wait for equipment
-                }
+                TryEquipNet(avatar);
+                yield return new WaitForSeconds(0.5f);
+                if (!HasNetEquipped(avatar)) yield break;
             }
 
             // Interact using the high-level method if possible, otherwise manual throw
@@ -230,6 +221,101 @@ namespace Simon.CozyGrove.AutoNet
                     doober.Pickup();
                 }
             }
+        }
+
+        private bool HasNetEquipped(AvatarController avatar)
+        {
+            if (avatar == null) return false;
+            
+            // Primary check
+            if (avatar.activeItem != null && avatar.activeItem.isNet) return true;
+            
+            // Inventory active item check
+            if (avatar.inventory != null && avatar.inventory.ActiveItem != null && avatar.inventory.ActiveItem.isNet) return true;
+
+            // Scan slots for equipped flag (covers cases where the model isn't active yet)
+            if (avatar.inventory != null)
+            {
+                foreach (var slot in avatar.inventory.slots)
+                {
+                    if (slot != null && slot.item != null && slot.item.equipped && slot.item.isNet) return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void TryEquipNet(AvatarController avatar)
+        {
+            if (avatar == null) return;
+
+            // Diagnostic: Find net in inventory
+            Item netItem = null;
+            if (avatar.inventory != null)
+            {
+                foreach (var slot in avatar.inventory.slots)
+                {
+                    if (slot != null && slot.item != null && slot.item.isNet)
+                    {
+                        netItem = slot.item;
+                        break;
+                    }
+                }
+            }
+
+            if (netItem == null)
+            {
+                ShowBark(avatar, "No Net Found!");
+                return;
+            }
+
+            // Attempt native hotkey if possible using reflection to avoid compile errors
+            // and handle slightly different property names
+            var inputActions = avatar.GetComponent<InputActionsController>() ?? UnityEngine.Object.FindObjectOfType<InputActionsController>();
+            if (inputActions != null)
+            {
+                try 
+                {
+                    var props = typeof(InputActionsController).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                    foreach (var prop in props)
+                    {
+                        if (prop.Name.Contains("HotkeyEquip") && (prop.Name.Contains("Net") || prop.Name.Contains("Critter")))
+                        {
+                            var eventObj = prop.GetValue(inputActions);
+                            if (eventObj != null)
+                            {
+                                // Specify Type.EmptyTypes to avoid "Ambiguous match found" if multiple Invoke overloads exist
+                                var invokeMethod = eventObj.GetType().GetMethod("Invoke", BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                                if (invokeMethod != null)
+                                {
+                                    MelonLogger.Msg($"Invoking native {prop.Name} event...");
+                                    invokeMethod.Invoke(eventObj, null);
+                                    return;
+                                }
+                                else 
+                                {
+                                    // Fallback search for any Invoke method without parameters
+                                    invokeMethod = eventObj.GetType().GetMethods().FirstOrDefault(m => m.Name == "Invoke" && m.GetParameters().Length == 0);
+                                    if (invokeMethod != null)
+                                    {
+                                        MelonLogger.Msg($"Invoking native {prop.Name} event (fallback lookup)...");
+                                        invokeMethod.Invoke(eventObj, null);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Msg($"Reflection lookup failed: {ex.Message}");
+                }
+            }
+
+            // Fallback to direct inventory use
+            MelonLogger.Msg("Using inventory fallback for net equipment...");
+            avatar.inventory.UseItem(netItem, false);
         }
 
         private bool HasNet(AvatarController avatar)
