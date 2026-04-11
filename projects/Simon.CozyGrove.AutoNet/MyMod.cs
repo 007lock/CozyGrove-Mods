@@ -126,7 +126,6 @@ namespace Simon.CozyGrove.AutoNet
 
             // Wait for user to manually dismiss any popups
             if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
-            if (avatar.speechBubble != null && avatar.speechBubble.isShown) return true;
 
             return avatar.actionsController.HasAnyActions();
         }
@@ -169,10 +168,18 @@ namespace Simon.CozyGrove.AutoNet
                 avatar.WalkToPosition(target.transform.position, true, false, CatchDistance * 0.8f, trackFunc);
                 
                 float timeout = CatchTimeout;
+                yield return null; // Wait 1 frame so walk action is registered
                 while (target != null && target.gameObject.activeInHierarchy && 
                        Vector3.Distance(avatar.transform.position, target.transform.position) > CatchDistance && timeout > 0)
                 {
                     if (!_isActive) yield break;
+
+                    // If the avatar has stopped moving completely but the critter is still too far
+                    // (e.g. critter moved away and WalkToPosition path completed), break so we don't idle-stall for 10 seconds.
+                    if (!avatar.actionsController.HasAnyActions())
+                    {
+                        break;
+                    }
                     
                     // Show tracking status
                     if (!avatar.speechBubble.isShown) ShowBark(avatar, "AutoNet: ON");
@@ -182,8 +189,15 @@ namespace Simon.CozyGrove.AutoNet
                 }
             }
 
-            // Use the target already walked to
+            // Verify the target is still valid after the tracking attempt
             if (target == null || !target.gameObject.activeInHierarchy) yield break;
+
+            // If the avatar stopped but is STILL too far away (e.g. critter moved out of range), abort this block
+            // to allow the main Coroutine to pick up a fresh target rather than swinging at air or getting stuck.
+            if (Vector3.Distance(avatar.transform.position, target.transform.position) > CatchDistance)
+            {
+                yield break;
+            }
 
             // Ensure net is equipped before action
             if (!HasNetEquipped(avatar))

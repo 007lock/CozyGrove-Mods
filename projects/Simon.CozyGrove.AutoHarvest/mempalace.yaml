@@ -1,0 +1,4 @@
+wing: simon.cozygrove.autoharvest
+rooms:
+- name: general
+  description: Files that don't fit other rooms

@@ -77,6 +77,24 @@
             "problemMatcher": "$msCompile"
         },
         {
+            "label": "build-SkippingShell",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "build",
+                "${workspaceFolder}/projects/Simon.CozyGrove.SkippingShell/Simon.CozyGrove.SkippingShell.csproj",
+                "-c",
+                "Release",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
             "label": "build-ClearInbox",
             "command": "dotnet",
             "type": "process",
