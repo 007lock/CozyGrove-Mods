@@ -24,6 +24,10 @@ Automatically catch critters. Default hotkey is `Ctrl + T`.
 
 Automatically catch fish. Default hotkey is `Ctrl + F`.
 
+### SkippingShell
+
+Automatically finding nearest Opened Shell and skip stones to it. Default hotkey is `Ctrl + S`.
+
 ## Installation (Windows)
 
 1. Install [MelonLoader](https://github.com/LavaGang/MelonLoader/releases) **v0.7.2+** to Cozy Grove.

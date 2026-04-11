@@ -74,6 +74,11 @@ namespace Simon.CozyGrove.SkippingShell
                 MelonCoroutines.Stop(_coroInstance);
                 _coroInstance = null;
             }
+            if (_cachedAvatar != null)
+            {
+                AutonomyManager.ClearBid(_cachedAvatar, "SkippingShell");
+                AutonomyManager.ReleaseLock(_cachedAvatar, "SkippingShell");
+            }
         }
 
         private IEnumerator SkippingShellCoro()
@@ -95,40 +100,57 @@ namespace Simon.CozyGrove.SkippingShell
 
                 if (IsAvatarBusy(avatar))
                 {
+                    AutonomyManager.ClearBid(avatar, "SkippingShell");
                     yield return new WaitForSeconds(0.5f);
                     continue;
                 }
 
-                // 1. Check if user has a stone equipped manually
-                Item stoneItem = avatar.activeItem;
-                if (!IsSkippingStone(stoneItem))
+                // 1. Find a skipping stone in inventory
+                Item stoneItem = null;
+                if (IsStoneEquipped(avatar, out Item equippedStone))
                 {
-                    // Check if they even have any to remind them
-                    Item stoneInInv = FindSkippingStone(avatar);
-                    if (stoneInInv == null)
-                    {
-                        ShowBark(avatar, "No skipping stones found!");
-                        yield return new WaitForSeconds(5f);
-                    }
-                    else
-                    {
-                        ShowBark(avatar, "Please equip a skipping stone!");
-                        yield return new WaitForSeconds(2f);
-                    }
+                    stoneItem = equippedStone;
+                }
+                else
+                {
+                    stoneItem = FindSkippingStone(avatar);
+                }
+
+                if (stoneItem == null)
+                {
+                    ShowBark(avatar, "No skipping stones found!");
+                    yield return new WaitForSeconds(5f);
                     continue;
                 }
 
-                MelonLogger.Msg($"Status: Using equipped stone '{stoneItem.configID.Value}'");
+                MelonLogger.Msg($"Status: Using stone '{stoneItem.configID.Value}'");
 
                 // 2. Find nearest shell
                 var target = FindNearestShell(avatar);
                 if (target == null)
                 {
+                    AutonomyManager.ClearBid(avatar, "SkippingShell");
                     MelonLogger.Msg("Status: No shells found.");
                     ShowBark(avatar, "No shells found.");
                     yield return new WaitForSeconds(5f);
                     continue;
                 }
+
+                float targetDist = Vector3.Distance(avatar.transform.position, target.transform.position);
+                AutonomyManager.UpdateBid(avatar, "SkippingShell", targetDist);
+                
+                yield return new WaitForSeconds(0.2f);
+                
+                if (avatar == null || !avatar.gameObject.activeInHierarchy || 
+                    IsAvatarBusy(avatar) || 
+                    !AutonomyManager.IsMyBidLowest(avatar, "SkippingShell", targetDist))
+                {
+                    AutonomyManager.ClearBid(avatar, "SkippingShell");
+                    continue;
+                }
+
+                AutonomyManager.ClearBid(avatar, "SkippingShell");
+                AutonomyManager.AcquireLock(avatar, "SkippingShell");
 
                 MelonLogger.Msg($"Status: Targeting shell at {target.transform.position}");
                 ShowBark(avatar, "Found shell! Preparing...");
@@ -193,12 +215,17 @@ namespace Simon.CozyGrove.SkippingShell
                     MelonLogger.Msg($"Shell still too far ({finalDist:F1}m > {dynamicMaxRange}m) - ignoring for 30s");
                     ShowBark(avatar, "Too far to reach!");
                     _targetIgnoreUntil[target] = Time.time + 30f;
+                    AutonomyManager.ReleaseLock(avatar, "SkippingShell");
                     yield break;
                 }
 
                 MelonLogger.Msg($"Status: At distance {finalDist:F2} from shell");
 
-                if (!_isActive) yield break;
+                if (!_isActive) 
+                {
+                    AutonomyManager.ReleaseLock(avatar, "SkippingShell");
+                    yield break;
+                }
 
                 // 4. Use native throwing action
                 MelonLogger.Msg("Status: Throwing!");
@@ -214,6 +241,8 @@ namespace Simon.CozyGrove.SkippingShell
 
                 CollectNearbyDoobers(avatar);
                 yield return new WaitForSeconds(1f);
+                
+                AutonomyManager.ReleaseLock(avatar, "SkippingShell");
             }
         }
 
@@ -221,7 +250,64 @@ namespace Simon.CozyGrove.SkippingShell
         {
             if (avatar == null || avatar.actionsController == null) return true;
             if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
+            if (AutonomyManager.IsLockedByAnother(avatar, "SkippingShell")) return true;
             return avatar.actionsController.HasAnyActions();
+        }
+
+        private bool IsStoneEquipped(AvatarController avatar, out Item equippedStone)
+        {
+            equippedStone = null;
+
+            // 1. Check avatar.activeItem
+            if (avatar.activeItem != null && IsSkippingStone(avatar.activeItem))
+            {
+                equippedStone = avatar.activeItem;
+                return true;
+            }
+
+            // 2. Check avatar.inventory.ActiveItem
+            if (avatar.inventory != null && avatar.inventory.ActiveItem != null && IsSkippingStone(avatar.inventory.ActiveItem))
+            {
+                equippedStone = avatar.inventory.ActiveItem;
+                return true;
+            }
+
+            // 3. Scan inventory for 'equipped' flag
+            if (avatar.inventory != null)
+            {
+                var slots = avatar.inventory.slots;
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    if (slots[i]?.item != null && slots[i].item.equipped && IsSkippingStone(slots[i].item))
+                    {
+                        equippedStone = slots[i].item;
+                        return true;
+                    }
+                }
+            }
+
+            // 4. Diagnostic: Reflection check for private usingItem
+            try
+            {
+                var usingItemField = typeof(AvatarController).GetField("usingItem", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (usingItemField != null)
+                {
+                    var val = usingItemField.GetValue(avatar);
+                    if (val != null)
+                    {
+                        Item hiddenItem = val as Item;
+                        if (hiddenItem != null && IsSkippingStone(hiddenItem))
+                        {
+                            MelonLogger.Msg($"[Diagnostic] Found stone in private 'usingItem' field: {hiddenItem.collectableItemConfig.id}");
+                            equippedStone = hiddenItem;
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[Diagnostic] Reflection failed: {ex.Message}"); }
+
+            return false;
         }
 
         private bool IsSkippingStone(Item item)
@@ -300,7 +386,12 @@ namespace Simon.CozyGrove.SkippingShell
                     try { gaveRewards = (bool)gaveRewardsField.GetValue(target); }
                     catch { }
                 }
-                if (gaveRewards) return;
+                if (gaveRewards) 
+                {
+                    // If target already gave rewards, ignore it permanently from this session
+                    _targetIgnoreUntil[target] = float.MaxValue;
+                    return;
+                }
 
                 float d2 = (target.transform.position - pos).sqrMagnitude;
                 if (d2 < bestDistSq)
@@ -356,31 +447,80 @@ namespace Simon.CozyGrove.SkippingShell
             avatar.actionsController.CancelAll();
 
             // Native throw mechanism
-            Vector3 spawnPos = avatarPos + Vector3.up * 0.5f; // Lower spawn pos for better visual
-            
-            // Initial velocity direction towards target
-            Vector3 velocity = (targetPos - avatarPos).normalized * 3f; 
+            // Use Z-axis for vertical height in isometric view.
+            // Set to 1.0m to provide a balanced "drop-in" arc that clears the lip but remains controllable.
+            Vector3 spawnPos = avatarPos + (lookDir.normalized * 0.6f);
+            spawnPos.z += 1.0f; 
             
             ThrownObject thrownObj;
             bool isBlocking;
-            // First spawn the object using the native controller (handles inventory and item matching). Pass Vector3.zero to avoid stacking velocity with ThrowWithForce.
+            // First spawn the object using the native controller (handles inventory and item matching).
             if (avatar.ThrowObject(Vector3.zero, item, out thrownObj, out isBlocking, true, new Il2CppSystem.Nullable<Vector3>(spawnPos)))
             {
                 if (thrownObj != null)
                 {
-                    // The "direction.y = 0" from the previous attempt caused the direction vector
-                    // to completely lose its North/South capability in 2D space, throwing it completely to the side!
+                    // Set the target destination explicitly to assist the internal skip logic
+                    try
+                    {
+                        var endPosField = typeof(ThrownObject).GetField("throwEndPosition", BindingFlags.Instance | BindingFlags.NonPublic);
+                        if (endPosField != null)
+                        {
+                            endPosField.SetValue(thrownObj, targetPos);
+                        }
+                    }
+                    catch { }
+
+                    // Calculate direction directly in the isometric ground plane (XY)
                     Vector3 direction = (targetPos - spawnPos).normalized;
-                    
-                    // We dynamically scale the speed based on the shell's distance. 
-                    // This ensures it hits the water with enough force to skip 3-4 times appropriately without shooting off-screen.
+
+                    // Balanced Trajectory Tuning:
+                    // Previous 1.62x hit the side; 3.5x was too strong.
+                    // We target ~14.8 speed for 16m throws using a 1.68x multiplier.
                     float distance = Vector3.Distance(spawnPos, targetPos);
-                    float speed = Mathf.Clamp(distance * 0.8f, 12f, 35f); 
+                    float gravity = Mathf.Abs(UnityEngine.Physics.gravity.y);
+                    if (gravity < 1f) gravity = 9.81f; 
+                    
+                    var config = ThrownObject.GetConfig(item);
+                    float mass = (config != null) ? config.mass : 1.0f;
+                    
+                    // Base physics speed (un-mass-compensated for the primary arc)
+                    float speed = Mathf.Clamp(1.68f * Mathf.Sqrt(distance * gravity), 8f, 55f); 
+                    
+                    // Discover the skip table for diagnostics
+                    string tableStr = "";
+                    float minSkipForce = 20f;
+                    if (config != null && config.skipAmounts != null)
+                    {
+                        foreach (var pair in config.skipAmounts)
+                        {
+                            tableStr += $"[{pair.force:F2}:{pair.skips}] ";
+                            if (pair.skips >= 1 && pair.force < minSkipForce) minSkipForce = pair.force;
+                        }
+                    }
+                    
+                    // Safety check: ensure we at least hit the skip threshold
+                    float minSkipSpeed = (minSkipForce / mass) * 1.1f;
+                    speed = Mathf.Max(speed, minSkipSpeed);
                     
                     Vector3 dynamicVelocity = direction * speed;
+                    Vector3 estimatedForce = dynamicVelocity * mass;
+
+                    string stoneId = (item.collectableItemConfig != null) ? item.collectableItemConfig.id : "Unknown";
+                    MelonLogger.Msg($"[Debug] Stone: {stoneId}, Mass: {mass:F2}, SkipTable: {tableStr}");
+                    MelonLogger.Msg($"[Debug] TargetForce: {estimatedForce.magnitude:F2}, MinSkipForce: {minSkipForce:F2}");
                     
-                    // Throw using velocity. `bounceToDestination` allows any internal skips to auto-target.
-                    thrownObj.ThrowWithVelocity(dynamicVelocity, avatar, true, item, new Il2CppSystem.Nullable<Vector3>(spawnPos), true);
+                    // Predict skip count using the Force estimate
+                    int expectedSkips = 0;
+                    try 
+                    {
+                        var method = typeof(ThrownObject).GetMethod("ExpectedSkips", BindingFlags.NonPublic | BindingFlags.Static);
+                        if (method != null) expectedSkips = (int)method.Invoke(null, new object[] { estimatedForce, item });
+                    } catch {}
+                    
+                    MelonLogger.Msg($"[Throw] Dist: {distance:F2}m, Speed: {speed:F2}, Expected Skips: {expectedSkips}");
+
+                    // Back to ThrowWithVelocity
+                    thrownObj.ThrowWithVelocity(dynamicVelocity, avatar, false, item, new Il2CppSystem.Nullable<Vector3>(spawnPos), true);
                 }
             }
             else
@@ -407,6 +547,80 @@ namespace Simon.CozyGrove.SkippingShell
             {
                 avatar.speechBubble.Show(text, SpriteInfo.Invalid, 2.5f);
             }
+        }
+    }
+
+    public static class AutonomyManager
+    {
+        public static void AcquireLock(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            if (avatar.transform.Find($"AutonomyLock_{modName}") == null)
+            {
+                var l = new GameObject($"AutonomyLock_{modName}");
+                l.transform.SetParent(avatar.transform);
+            }
+        }
+        
+        public static void ReleaseLock(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            var l = avatar.transform.Find($"AutonomyLock_{modName}");
+            if (l != null) UnityEngine.Object.Destroy(l.gameObject);
+        }
+        
+        public static bool IsLockedByAnother(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return false;
+            for (int i = 0; i < avatar.transform.childCount; i++)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith("AutonomyLock_") && n != $"AutonomyLock_{modName}") return true;
+            }
+            return false;
+        }
+        
+        public static void UpdateBid(AvatarController avatar, string modName, float distance)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            ClearBid(avatar, modName);
+            if (distance < float.MaxValue)
+            {
+                var b = new GameObject($"AutonomyBid_{modName}_{distance.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+                b.transform.SetParent(avatar.transform);
+            }
+        }
+        
+        public static void ClearBid(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            for (int i = avatar.transform.childCount - 1; i >= 0; i--)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith($"AutonomyBid_{modName}_"))
+                {
+                    UnityEngine.Object.Destroy(avatar.transform.GetChild(i).gameObject);
+                }
+            }
+        }
+        
+        public static bool IsMyBidLowest(AvatarController avatar, string modName, float myDistance)
+        {
+            if (avatar == null || avatar.transform == null) return true;
+            for (int i = 0; i < avatar.transform.childCount; i++)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith("AutonomyBid_") && !n.StartsWith($"AutonomyBid_{modName}_"))
+                {
+                    var parts = n.Split('_');
+                    if (parts.Length >= 3 && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float otherDist))
+                    {
+                        if (otherDist < myDistance) return false;
+                        if (otherDist == myDistance && string.Compare(parts[1], modName) < 0) return false;
+                    }
+                }
+            }
+            return true;
         }
     }
 }

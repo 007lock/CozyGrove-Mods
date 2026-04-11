@@ -1,5 +1,13 @@
 {
-  "disabledMcpjsonServers": [
-    "memplace"
-  ]
+  "permissions": {
+    "allow": [
+      "mcp__mempalace__mempalace_list_wings",
+      "mcp__memory__memory_stats",
+      "mcp__mempalace__mempalace_list_rooms",
+      "mcp__mempalace__mempalace_traverse",
+      "mcp__mempalace__mempalace_search",
+      "mcp__memory__memory_store",
+      "Bash(ls -la /d/Working/CozyGrove-Mods/*.md)"
+    ]
+  }
 }

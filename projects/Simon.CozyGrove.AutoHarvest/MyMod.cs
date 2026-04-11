@@ -24,11 +24,21 @@ namespace Simon.CozyGrove.AutoHarvest
             if (!_isInGameScene)
             {
                 _isEnabled = false;
-                if (_autoHarvestCoroutine != null)
-                {
-                    MelonCoroutines.Stop(_autoHarvestCoroutine);
-                    _autoHarvestCoroutine = null;
-                }
+                ResetState();
+            }
+        }
+
+        private void ResetState()
+        {
+            if (_autoHarvestCoroutine != null)
+            {
+                MelonCoroutines.Stop(_autoHarvestCoroutine);
+                _autoHarvestCoroutine = null;
+            }
+            if (_cachedAvatar != null)
+            {
+                AutonomyManager.ClearBid(_cachedAvatar, "AutoHarvest");
+                AutonomyManager.ReleaseLock(_cachedAvatar, "AutoHarvest");
             }
         }
 
@@ -58,10 +68,9 @@ namespace Simon.CozyGrove.AutoHarvest
                 {
                     _autoHarvestCoroutine = (Coroutine)MelonCoroutines.Start(AutoHarvestCoro());
                 }
-                else if (_autoHarvestCoroutine != null)
+                else 
                 {
-                    MelonCoroutines.Stop(_autoHarvestCoroutine);
-                    _autoHarvestCoroutine = null;
+                    ResetState();
                 }
             }
         }
@@ -73,20 +82,46 @@ namespace Simon.CozyGrove.AutoHarvest
                 var avatar = GetAvatar();
                 if (avatar != null && !IsAvatarBusy(avatar))
                 {
-                    // Show tracking status
-                    if (avatar.speechBubble != null && !avatar.speechBubble.isShown)
-                    {
-                        ShowBark(avatar, "AutoHarvest: ON");
-                    }
-
                     var target = FindNearestTarget(avatar);
                     if (target != null)
                     {
+                        float dist = Vector3.Distance(avatar.transform.position, target.transform.position);
+                        AutonomyManager.UpdateBid(avatar, "AutoHarvest", dist);
+                        
+                        yield return new WaitForSeconds(0.2f);
+                        
+                        if (avatar == null || !avatar.gameObject.activeInHierarchy || 
+                            IsAvatarBusy(avatar) || 
+                            !AutonomyManager.IsMyBidLowest(avatar, "AutoHarvest", dist))
+                        {
+                            AutonomyManager.ClearBid(avatar, "AutoHarvest");
+                            continue;
+                        }
+
+                        // Show tracking status
+                        if (avatar.speechBubble != null && !avatar.speechBubble.isShown)
+                        {
+                            ShowBark(avatar, "AutoHarvest: ON");
+                        }
+
+                        AutonomyManager.ClearBid(avatar, "AutoHarvest");
+                        AutonomyManager.AcquireLock(avatar, "AutoHarvest");
+                        
                         yield return HandleTarget(target, avatar);
+                        
+                        AutonomyManager.ReleaseLock(avatar, "AutoHarvest");
+                    }
+                    else
+                    {
+                        AutonomyManager.ClearBid(avatar, "AutoHarvest");
                     }
                 }
+                else if (avatar != null)
+                {
+                    AutonomyManager.ClearBid(avatar, "AutoHarvest");
+                }
 
-                yield return new WaitForSeconds(1f);
+                yield return new WaitForSeconds(0.8f);
             }
         }
 
@@ -96,6 +131,8 @@ namespace Simon.CozyGrove.AutoHarvest
 
             // Wait for user to manually dismiss any popups (e.g. bag full)
             if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
+
+            if (AutonomyManager.IsLockedByAnother(avatar, "AutoHarvest")) return true;
 
             return avatar.actionsController.HasAnyActions();
         }
@@ -262,6 +299,80 @@ namespace Simon.CozyGrove.AutoHarvest
             {
                 avatar.speechBubble.Show(text, SpriteInfo.Invalid, 2.0f);
             }
+        }
+    }
+
+    public static class AutonomyManager
+    {
+        public static void AcquireLock(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            if (avatar.transform.Find($"AutonomyLock_{modName}") == null)
+            {
+                var l = new GameObject($"AutonomyLock_{modName}");
+                l.transform.SetParent(avatar.transform);
+            }
+        }
+        
+        public static void ReleaseLock(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            var l = avatar.transform.Find($"AutonomyLock_{modName}");
+            if (l != null) UnityEngine.Object.Destroy(l.gameObject);
+        }
+        
+        public static bool IsLockedByAnother(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return false;
+            for (int i = 0; i < avatar.transform.childCount; i++)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith("AutonomyLock_") && n != $"AutonomyLock_{modName}") return true;
+            }
+            return false;
+        }
+        
+        public static void UpdateBid(AvatarController avatar, string modName, float distance)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            ClearBid(avatar, modName);
+            if (distance < float.MaxValue)
+            {
+                var b = new GameObject($"AutonomyBid_{modName}_{distance.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+                b.transform.SetParent(avatar.transform);
+            }
+        }
+        
+        public static void ClearBid(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            for (int i = avatar.transform.childCount - 1; i >= 0; i--)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith($"AutonomyBid_{modName}_"))
+                {
+                    UnityEngine.Object.Destroy(avatar.transform.GetChild(i).gameObject);
+                }
+            }
+        }
+        
+        public static bool IsMyBidLowest(AvatarController avatar, string modName, float myDistance)
+        {
+            if (avatar == null || avatar.transform == null) return true;
+            for (int i = 0; i < avatar.transform.childCount; i++)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith("AutonomyBid_") && !n.StartsWith($"AutonomyBid_{modName}_"))
+                {
+                    var parts = n.Split('_');
+                    if (parts.Length >= 3 && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float otherDist))
+                    {
+                        if (otherDist < myDistance) return false;
+                        if (otherDist == myDistance && string.Compare(parts[1], modName) < 0) return false;
+                    }
+                }
+            }
+            return true;
         }
     }
 }

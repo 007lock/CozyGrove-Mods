@@ -40,6 +40,7 @@ namespace Simon.CozyGrove.AutoFishing
         private enum FishingState
         {
             Idle,
+            Bidding,
             WalkingToFish,
             ThrowingRod,
             Fishing,
@@ -52,6 +53,7 @@ namespace Simon.CozyGrove.AutoFishing
         private AvatarActionFishing _currentFishingAction = null;
         private Vector3 _lastAvatarPos;
         private float _stuckTimer = 0f;
+        private float _lastStuckCheckTime = 0f;
         private string _pendingEquipId = null;
 
         // Configuration
@@ -83,6 +85,9 @@ namespace Simon.CozyGrove.AutoFishing
                 case FishingState.Idle:
                     UpdateIdle(avatar);
                     break;
+                case FishingState.Bidding:
+                    UpdateBidding(avatar);
+                    break;
                 case FishingState.WalkingToFish:
                     UpdateWalkingToFish(avatar);
                     break;
@@ -105,7 +110,14 @@ namespace Simon.CozyGrove.AutoFishing
             _currentFishingAction = null;
             _stateTimer = 0f;
             _stuckTimer = 0f;
+            _lastStuckCheckTime = 0f;
             _pendingEquipId = null;
+
+            if (_cachedAvatar != null)
+            {
+                AutonomyManager.ClearBid(_cachedAvatar, "AutoFishing");
+                AutonomyManager.ReleaseLock(_cachedAvatar, "AutoFishing");
+            }
 
             // Cleanup orphaned bobbers from failed manual casts
             var bobbers = UnityEngine.Object.FindObjectsOfType<GameObject>();
@@ -118,9 +130,23 @@ namespace Simon.CozyGrove.AutoFishing
             }
         }
 
+        private bool IsAvatarBusy(AvatarController avatar)
+        {
+            if (avatar == null || avatar.actionsController == null) return true;
+
+            // Wait for user to manually dismiss any popups
+            if (GameUI.Instance.IsAnyModalUIOpen() || GameUI.Instance.InDialog()) return true;
+
+            if (AutonomyManager.IsLockedByAnother(avatar, "AutoFishing")) return true;
+
+            return avatar.actionsController.HasAnyActions();
+        }
+
         private void UpdateIdle(AvatarController avatar)
         {
             _stateTimer += Time.deltaTime;
+
+            if (IsAvatarBusy(avatar)) return;
 
             if (!IsRodEquipped(avatar, out var equippedRod))
             {
@@ -158,21 +184,46 @@ namespace Simon.CozyGrove.AutoFishing
             if (bestFish != null)
             {
                 _targetFish = bestFish;
-                _currentState = FishingState.WalkingToFish;
+                _currentState = FishingState.Bidding;
                 _stateTimer = 0f;
-                _stuckTimer = 0f;
-                _lastAvatarPos = avatar.transform.position;
-                MelonLogger.Msg("Found fish, moving to cast position...");
-                
-                Func<Vector3> trackFunc = new Func<Vector3>(() => 
-                {
-                    if (_targetFish != null && _targetFish.gameObject.activeInHierarchy)
-                        return _targetFish.transform.position;
-                    return avatar.transform.position;
-                });
 
-                // Walk to a distance slightly smaller than CastDistanceMax
-                avatar.WalkToPosition(_targetFish.transform.position, true, false, 10.0f, trackFunc);
+                float dist = Mathf.Sqrt(bestDistSq);
+                AutonomyManager.UpdateBid(avatar, "AutoFishing", dist);
+            }
+        }
+
+        private void UpdateBidding(AvatarController avatar)
+        {
+            _stateTimer += Time.deltaTime;
+            if (_stateTimer >= 0.2f)
+            {
+                if (_targetFish == null || !AutonomyManager.IsMyBidLowest(avatar, "AutoFishing", Vector3.Distance(avatar.transform.position, _targetFish.transform.position)) || IsAvatarBusy(avatar))
+                {
+                    AutonomyManager.ClearBid(avatar, "AutoFishing");
+                    ResetState();
+                }
+                else
+                {
+                    AutonomyManager.ClearBid(avatar, "AutoFishing");
+                    AutonomyManager.AcquireLock(avatar, "AutoFishing");
+                    
+                    _currentState = FishingState.WalkingToFish;
+                    _stateTimer = 0f;
+                    _stuckTimer = 0f;
+                    _lastStuckCheckTime = 0f;
+                    _lastAvatarPos = avatar.transform.position;
+                    MelonLogger.Msg("Won bid, moving to cast position...");
+                    
+                    Func<Vector3> trackFunc = new Func<Vector3>(() => 
+                    {
+                        if (_targetFish != null && _targetFish.gameObject.activeInHierarchy)
+                            return _targetFish.transform.position;
+                        return avatar.transform.position;
+                    });
+
+                    // Walk as close as possible to the fish (which will stop at the ocean edge)
+                    avatar.WalkToPosition(_targetFish.transform.position, true, false, 0.5f, trackFunc);
+                }
             }
         }
 
@@ -301,28 +352,42 @@ namespace Simon.CozyGrove.AutoFishing
             Vector3 fishPos = _targetFish.transform.position;
             float dist2D = Vector2.Distance(new Vector2(avatarPos.x, avatarPos.z), new Vector2(fishPos.x, fishPos.z));
 
-            // Stuck detection (e.g. at the shore)
-            if (Vector3.Distance(avatarPos, _lastAvatarPos) < 0.1f)
+            // Stuck detection over an interval (e.g., 0.25s) to avoid false per-frame triggers
+            if (_stateTimer - _lastStuckCheckTime > 0.25f)
             {
-                _stuckTimer += Time.deltaTime;
-            }
-            else
-            {
-                _stuckTimer = 0f;
+                if (Vector3.Distance(avatarPos, _lastAvatarPos) < 0.1f)
+                {
+                    _stuckTimer += (_stateTimer - _lastStuckCheckTime);
+                }
+                else
+                {
+                    _stuckTimer = 0f;
+                }
                 _lastAvatarPos = avatarPos;
+                _lastStuckCheckTime = _stateTimer;
             }
 
-            // Transition if: 1. In range, 2. Stuck, 3. Timeout
-            bool inRange = dist2D <= CastDistanceMax;
-            bool stuckInRange = _stuckTimer > 1.0f && dist2D < 20.0f;
+            // Transition if we hit the shore (stuck) or completed walking, or timeout
+            bool hitShore = _stuckTimer > 0.5f;
+            bool actionComplete = _stateTimer > 0.5f && !avatar.actionsController.HasAnyActions();
             bool timeout = _stateTimer > ActionTimeout;
 
-            if (inRange || stuckInRange || timeout)
+            if (hitShore || actionComplete || timeout)
             {
+                if (dist2D > 25.0f)
+                {
+                    MelonLogger.Msg($"Reached destination but fish is still too far ({dist2D:F2}m). Resetting.");
+                    ResetState();
+                    return;
+                }
+
                 if (timeout) MelonLogger.Msg("Walking timeout, casting...");
-                else if (stuckInRange) MelonLogger.Msg($"Stuck at shore ({dist2D:F2}m), casting...");
-                else MelonLogger.Msg($"In range ({dist2D:F2}m), casting...");
+                else if (hitShore) MelonLogger.Msg($"Hit shore ({dist2D:F2}m), casting...");
+                else MelonLogger.Msg($"Walk action complete ({dist2D:F2}m), casting...");
                 
+                // Stop the avatar from physically sliding if a walk action was still active
+                avatar.actionsController.CancelAll();
+
                 _currentState = FishingState.ThrowingRod;
                 _stateTimer = 0f;
             }
@@ -593,6 +658,80 @@ namespace Simon.CozyGrove.AutoFishing
             {
                 avatar.speechBubble.Show(text, SpriteInfo.Invalid, 2.0f);
             }
+        }
+    }
+
+    public static class AutonomyManager
+    {
+        public static void AcquireLock(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            if (avatar.transform.Find($"AutonomyLock_{modName}") == null)
+            {
+                var l = new GameObject($"AutonomyLock_{modName}");
+                l.transform.SetParent(avatar.transform);
+            }
+        }
+        
+        public static void ReleaseLock(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            var l = avatar.transform.Find($"AutonomyLock_{modName}");
+            if (l != null) UnityEngine.Object.Destroy(l.gameObject);
+        }
+        
+        public static bool IsLockedByAnother(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return false;
+            for (int i = 0; i < avatar.transform.childCount; i++)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith("AutonomyLock_") && n != $"AutonomyLock_{modName}") return true;
+            }
+            return false;
+        }
+        
+        public static void UpdateBid(AvatarController avatar, string modName, float distance)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            ClearBid(avatar, modName);
+            if (distance < float.MaxValue)
+            {
+                var b = new GameObject($"AutonomyBid_{modName}_{distance.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+                b.transform.SetParent(avatar.transform);
+            }
+        }
+        
+        public static void ClearBid(AvatarController avatar, string modName)
+        {
+            if (avatar == null || avatar.transform == null) return;
+            for (int i = avatar.transform.childCount - 1; i >= 0; i--)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith($"AutonomyBid_{modName}_"))
+                {
+                    UnityEngine.Object.Destroy(avatar.transform.GetChild(i).gameObject);
+                }
+            }
+        }
+        
+        public static bool IsMyBidLowest(AvatarController avatar, string modName, float myDistance)
+        {
+            if (avatar == null || avatar.transform == null) return true;
+            for (int i = 0; i < avatar.transform.childCount; i++)
+            {
+                var n = avatar.transform.GetChild(i).name;
+                if (n.StartsWith("AutonomyBid_") && !n.StartsWith($"AutonomyBid_{modName}_"))
+                {
+                    var parts = n.Split('_');
+                    if (parts.Length >= 3 && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float otherDist))
+                    {
+                        if (otherDist < myDistance) return false;
+                        if (otherDist == myDistance && string.Compare(parts[1], modName) < 0) return false;
+                    }
+                }
+            }
+            return true;
         }
     }
 }
