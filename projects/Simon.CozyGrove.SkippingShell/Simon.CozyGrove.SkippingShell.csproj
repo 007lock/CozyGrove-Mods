@@ -61,5 +61,6 @@
     <Reference Include="Il2Cppspine-unity">
       <HintPath>D:\Games\CozyGrove\MelonLoader\Il2CppAssemblies\Il2Cppspine-unity.dll</HintPath>
     </Reference>
+
   </ItemGroup>
 </Project>
