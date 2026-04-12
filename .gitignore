@@ -4,3 +4,5 @@ projects/*/bin
 projects/*/obj
 
 resources/dump_split
+
+.claude
