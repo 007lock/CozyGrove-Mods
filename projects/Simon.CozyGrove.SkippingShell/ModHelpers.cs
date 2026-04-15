@@ -1,8 +1,6 @@
 using Il2Cpp;
 using UnityEngine;
 using System;
-using System.Reflection;
-using MelonLoader;
 using Il2CppSpryFox.Common;
 
 namespace Simon.CozyGrove.SkippingShell

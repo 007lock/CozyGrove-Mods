@@ -1,7 +1,6 @@
 using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
-using System.Collections;
 
 namespace Simon.CozyGrove.SkippingShell
 {
@@ -22,7 +21,7 @@ namespace Simon.CozyGrove.SkippingShell
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
-            _isInGameScene = (sceneName == "Game");
+            _isInGameScene = sceneName == "Game";
             _cachedAvatar = null;
             if (!_isInGameScene)
             {

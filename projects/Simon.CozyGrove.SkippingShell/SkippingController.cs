@@ -148,8 +148,12 @@ namespace Simon.CozyGrove.SkippingShell
                 ModHelpers.ShowBark(avatar, "Throwing!");
                 yield return ThrowWithNativeAction(avatar, stoneItem, target, spawnPos);
 
+                // Wait for all avatar actions to finish (prevents double throw)
+                while (avatar.actionsController.HasAnyActions())
+                    yield return null;
+
                 // Wait for the stone to finish skipping and disappear
-                yield return new WaitForSeconds(1.0f); 
+                yield return new WaitForSeconds(1.0f);
                 while (UnityEngine.Object.FindObjectsOfType<ThrownObject>().Length > 0)
                 {
                     yield return new WaitForSeconds(0.5f);
@@ -223,14 +227,12 @@ namespace Simon.CozyGrove.SkippingShell
                 avatar.SetHorizontalFlipping(lookDir.x < 0);
             }
 
-            var throwAction = new AvatarActionThrowing(avatar, item);
-            avatar.actionsController.Add(throwAction.Cast<IAvatarAction>());
-            yield return new WaitForSeconds(0.5f);
-            avatar.actionsController.CancelAll(); 
-            
-            ThrownObject thrownObj;
-            bool isBlocking;
-            if (avatar.ThrowObject(Vector3.zero, item, out thrownObj, out isBlocking, true, new Il2CppSystem.Nullable<Vector3>(spawnPos)))
+            // Do NOT add AvatarActionThrowing — its Steps() coroutine calls ThrowObject
+            // internally at the animation throw-point, which would spawn a second stone
+            // before our own ThrowObject call below.
+            yield return null; // one frame for facing to settle
+
+            if (avatar.ThrowObject(Vector3.zero, item, out ThrownObject thrownObj, out bool isBlocking, true, new Il2CppSystem.Nullable<Vector3>(spawnPos)))
             {
                 if (thrownObj != null)
                 {
@@ -256,9 +258,7 @@ namespace Simon.CozyGrove.SkippingShell
                     // Projectile physics: speed = multiplier * sqrt(distance * gravity)
                     float speed = speedMultiplier * Mathf.Sqrt(Mathf.Max(0f, distance) * Gravity);
 
-                    float impactForce;
-                    float minDistanceForFirstSkip;
-                    int predictedSkips = CalculatePossibleSkips(distance, config, mass, speedMultiplier, out impactForce, out minDistanceForFirstSkip);
+                    int predictedSkips = CalculatePossibleSkips(distance, config, mass, speedMultiplier, out float impactForce, out float minDistanceForFirstSkip);
 
                     // Build velocity directly toward target. Forcing extra Z arc caused
                     // some longer throws to miss water and fail to skip.
@@ -303,7 +303,7 @@ namespace Simon.CozyGrove.SkippingShell
             {
                 float minSpeed = minForceForAnySkip / safeMass;
                 float denom = safeMultiplier * safeMultiplier * Gravity;
-                minDistanceForFirstSkip = (denom > 0f) ? (minSpeed * minSpeed) / denom : 0f;
+                minDistanceForFirstSkip = (denom > 0f) ? minSpeed * minSpeed / denom : 0f;
 
                 // Too near to reach the first skip threshold.
                 if (safeDistance + 0.01f < minDistanceForFirstSkip)
