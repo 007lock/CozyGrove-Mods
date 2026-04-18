@@ -66,10 +66,7 @@ namespace Simon.CozyGrove.SkippingShell
 
             if (!_isActive) return;
 
-            if (_coroInstance == null)
-            {
-                _coroInstance = MelonCoroutines.Start(_controller.SkippingShellCoro(this, GetAvatar));
-            }
+            _coroInstance ??= MelonCoroutines.Start(_controller.SkippingShellCoro(this, GetAvatar));
         }
 
         private void ResetState()

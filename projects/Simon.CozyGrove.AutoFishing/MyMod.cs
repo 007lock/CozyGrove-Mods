@@ -75,8 +75,8 @@ namespace Simon.CozyGrove.AutoFishing
             if ((Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt)) && Input.GetKeyDown(KeyCode.F))
             {
                 _findNewFishOnly = !_findNewFishOnly;
-                MelonLogger.Msg($"NewFishOnly filter is now {(_findNewFishOnly ? "ON" : "OFF")}");
-                ShowBark(avatar, $"NewFishOnly {(_findNewFishOnly ? "ON" : "OFF")}");
+                MelonLogger.Msg($"ValueFish filter is now {(_findNewFishOnly ? "ON" : "OFF")} (uncommon+/recipe)");
+                ShowBark(avatar, $"ValueFish {(_findNewFishOnly ? "ON" : "OFF")}");
             }
 
             if (!_isActive) return;
