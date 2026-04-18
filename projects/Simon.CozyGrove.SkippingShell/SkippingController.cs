@@ -267,7 +267,11 @@ namespace Simon.CozyGrove.SkippingShell
                     MelonLogger.Msg($"[SkippingController] Stone: {stoneType} | Distance: {distance:F1}m | Speed: {speed:F1} | ImpactForce: {impactForce:F2} | Mass: {mass:F2} | Mult: {speedMultiplier:F2} (PossibleSkips<=4: {predictedSkips}, MinDist1Skip: {minDistanceForFirstSkip:F1}m)");
 
                     thrownObj.wasThrownByAvatar = true;
-                    thrownObj.ThrowWithVelocity(velocity, avatar, true, item, new Il2CppSystem.Nullable<Vector3>(spawnPos), true);
+                    // bounceToDestination=false: let real physics run so the stone arcs into
+                    // the water and the game's skip physics carries it to the shell.
+                    // bounceToDestination=true was the bug — it guided the stone straight to
+                    // throwEndPosition (shell), bypassing the water surface entirely.
+                    thrownObj.ThrowWithVelocity(velocity, avatar, true, item, new Il2CppSystem.Nullable<Vector3>(spawnPos), false);
                 }
             }
         }

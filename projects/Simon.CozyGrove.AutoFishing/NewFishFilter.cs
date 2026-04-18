@@ -2,78 +2,116 @@ using Il2Cpp;
 using MelonLoader;
 using System;
 using System.Collections.Generic;
-using System.Reflection;
+using System.Text.RegularExpressions;
+using Il2CppSpryFox.Common;
 
 namespace Simon.CozyGrove.AutoFishing
 {
-    // Tracks whether a fish's loot table contains items not yet in the captain's collection.
-    // Uses reflection to enumerate Il2Cpp IEnumerable<string> (does not bridge to CLR IEnumerable).
-    // Results are cached per loot-table name and cleared after each collection.
+    // Checks whether a fish's loot table can yield uncommon, rare, ultra_rare, epic, legendary,
+    // unique, or recipe items. Loot table rewards are tag expressions like
+    // "randomWithTags[fish,medium,slow]" or "randomRecipe[...]". We parse the tags and query
+    // CollectableItem.GetItemsFilteredByTagsCached with each value rarity to detect a match.
+    // Results cached per loot-table name; cleared after each catch.
     public partial class MyMod
     {
-        // true = has at least one uncollected item, false = all items already donated
-        private readonly Dictionary<string, bool> _lootTableNewCache = new Dictionary<string, bool>();
+        private static readonly string[] _valueRarityTags =
+            { "uncommon", "rare", "ultra_rare", "epic", "legendary", "unique" };
 
-        private bool HasNewItemInLootTable(string lootTableName, CollectionsState collections, LootSystem lootSys)
+        private readonly Dictionary<string, bool> _lootTableNewCache = new Dictionary<string, bool>();
+        private bool _resolvedTableThisTick = false;
+
+        private void ResetLootTableTickGate() => _resolvedTableThisTick = false;
+
+        private bool HasValueItemInLootTable(string lootTableName, LootSystem lootSys)
         {
             if (_lootTableNewCache.TryGetValue(lootTableName, out bool cached))
                 return cached;
 
-            bool hasNew = true; // fail-open: treat as "new" on any error
+            if (_resolvedTableThisTick)
+                return true; // fail-open; resolved next tick
+
+            _resolvedTableThisTick = true;
+
             try
             {
-                var rewards = lootSys.GetAllPossibleItemRewardStrings(lootTableName);
-                if (rewards == null)
+                var tables = lootSys.lootTables;
+                if (tables == null || !tables.ContainsKey(lootTableName))
                 {
-                    MelonLogger.Warning($"[NewFish] GetAllPossibleItemRewardStrings returned null for '{lootTableName}' — treating as new.");
+                    MelonLogger.Warning($"[FishFilter] '{lootTableName}': not in lootTables.");
+                    return true;
                 }
-                else
-                {
-                    // GetAllPossibleItemRewardStrings returns an Il2Cpp proxy that does NOT bridge to
-                    // System.Collections.Generic.IEnumerable<string> at runtime. Use reflection.
-                    Type rewardType = rewards.GetType();
-                    MethodInfo getEnumerator = rewardType.GetMethod("GetEnumerator");
-                    if (getEnumerator == null)
-                    {
-                        MelonLogger.Warning($"[NewFish] No GetEnumerator on {rewardType.Name} for '{lootTableName}' — treating as new.");
-                    }
-                    else
-                    {
-                        object enumerator = getEnumerator.Invoke(rewards, null);
-                        Type enumType = enumerator?.GetType();
-                        MethodInfo moveNext = enumType?.GetMethod("MoveNext");
-                        PropertyInfo current = enumType?.GetProperty("Current");
 
-                        if (moveNext == null || current == null)
+                var tableConfig = tables[lootTableName];
+                if (tableConfig == null) return true;
+
+                // Collect the raw item strings (tag expressions) via our own HashSet.
+                var rawItems = new Il2CppSystem.Collections.Generic.HashSet<string>();
+                lootSys.AddRewardItemStrings(tableConfig.reward, rawItems, 0, lootTableName);
+
+                bool hasValue = false;
+                var internalList = new Il2CppSystem.Collections.Generic.List<ConfigID>();
+                var enumerator = rawItems.GetEnumerator();
+                while (enumerator.MoveNext())
+                {
+                    string expr = enumerator.Current;
+                    if (string.IsNullOrEmpty(expr)) continue;
+
+                    // Recipes are always considered valuable.
+                    if (expr.StartsWith("randomRecipe"))
+                    {
+                        MelonLogger.Msg($"[FishFilter] '{lootTableName}': recipe slot → value.");
+                        hasValue = true;
+                        break;
+                    }
+
+                    var match = Regex.Match(expr, @"\[(.+)\]");
+                    if (!match.Success) continue;
+
+                    // Parse include/exclude tags.
+                    string[] parts = match.Groups[1].Value.Split(',');
+                    var inclTags = new System.Collections.Generic.List<string>();
+                    var exclTags = new System.Collections.Generic.List<string>();
+                    foreach (var p in parts)
+                    {
+                        string t = p.Trim();
+                        if (t.StartsWith("!")) exclTags.Add(t.Substring(1));
+                        else inclTags.Add(t);
+                    }
+
+                    if (inclTags.Count == 0) continue;
+
+                    TagSet exclSet = exclTags.Count > 0 ? TagSet.Create(exclTags.ToArray()) : TagSet.Empty;
+
+                    // Check if the pool contains items at any value rarity tier.
+                    foreach (string rarity in _valueRarityTags)
+                    {
+                        var rarityInclTags = new System.Collections.Generic.List<string>(inclTags) { rarity };
+                        TagSet inclSet = TagSet.Create(rarityInclTags.ToArray());
+                        var weighted = CollectableItem.GetItemsFilteredByTagsCached(
+                            internalList, inclSet, exclSet,
+                            ignoreSchedule: false, ignoreUnlockState: false,
+                            allowUnlearnedCraftable: false, filterFunc: null);
+                        if (weighted.HasItems())
                         {
-                            MelonLogger.Warning($"[NewFish] Enumerator for '{lootTableName}' missing MoveNext/Current — treating as new.");
-                        }
-                        else
-                        {
-                            hasNew = false;
-                            int count = 0;
-                            while ((bool)moveNext.Invoke(enumerator, null))
-                            {
-                                string itemId = current.GetValue(enumerator)?.ToString();
-                                count++;
-                                if (!string.IsNullOrEmpty(itemId) && collections.CanBeDonated(new ConfigID(itemId)))
-                                {
-                                    hasNew = true;
-                                    break;
-                                }
-                            }
-                            MelonLogger.Msg($"[NewFish] '{lootTableName}': checked {count} item(s), hasNew={hasNew}");
+                            MelonLogger.Msg($"[FishFilter] '{lootTableName}': {rarity} items in [{string.Join(",", inclTags)}] → value.");
+                            hasValue = true;
+                            break;
                         }
                     }
+                    if (hasValue) break;
                 }
+
+                if (!hasValue)
+                    MelonLogger.Msg($"[FishFilter] '{lootTableName}': only common items — skipping.");
+
+                _lootTableNewCache[lootTableName] = hasValue;
+                return hasValue;
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"[NewFish] Exception checking '{lootTableName}': {ex.Message} — treating as new.");
+                MelonLogger.Warning($"[FishFilter] '{lootTableName}': exception — {ex.Message}");
+                return true;
             }
-
-            _lootTableNewCache[lootTableName] = hasNew;
-            return hasNew;
         }
     }
 }

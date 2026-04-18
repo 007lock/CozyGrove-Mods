@@ -34,36 +34,25 @@ namespace Simon.CozyGrove.AutoFishing
             float bestDistSq = float.MaxValue;
             Vector3 avatarPos = avatar.transform.position;
 
-            CollectionsState playerCollections = null;
             LootSystem lootSys = null;
             if (_findNewFishOnly)
             {
-                playerCollections = Il2Cpp.Main.Instance?.GameState?.PlayerCollections;
                 lootSys = Il2Cpp.Main.Instance?.lootSystem;
+                if (lootSys == null)
+                    MelonLogger.Warning("[FishFilter] LootSystem not available — filter skipped this tick.");
+                // Reset per-tick gate so exactly one uncached table is resolved this frame.
+                ResetLootTableTickGate();
             }
 
             foreach (var fish in fishes)
             {
                 if (fish != null && fish.gameObject.activeInHierarchy)
                 {
-                    if (_findNewFishOnly)
+                    if (_findNewFishOnly && lootSys != null)
                     {
-                        if (playerCollections == null || lootSys == null)
-                        {
-                            MelonLogger.Warning("[NewFish] PlayerCollections or LootSystem not available — filter skipped.");
-                        }
-                        else
-                        {
-                            string lootTableName = fish.typeConfig?.lootTable;
-                            if (string.IsNullOrEmpty(lootTableName))
-                            {
-                                MelonLogger.Msg($"[NewFish] {fish.fishTypeConfigId}: no loot table, skipping.");
-                                continue;
-                            }
-
-                            if (!HasNewItemInLootTable(lootTableName, playerCollections, lootSys))
-                                continue;
-                        }
+                        string lootTable = fish.typeConfig?.lootTable;
+                        if (string.IsNullOrEmpty(lootTable) || !HasValueItemInLootTable(lootTable, lootSys))
+                            continue;
                     }
 
                     float distSq = (fish.transform.position - avatarPos).sqrMagnitude;
