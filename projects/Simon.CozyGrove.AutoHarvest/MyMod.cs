@@ -16,6 +16,7 @@ namespace Simon.CozyGrove.AutoHarvest
         private Coroutine _autoHarvestCoroutine;
         private AvatarController _cachedAvatar = null;
         private bool _isInGameScene = false;
+        private HashSet<int> _visitedTargets = new HashSet<int>();
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
@@ -40,6 +41,7 @@ namespace Simon.CozyGrove.AutoHarvest
                 AutonomyManager.ClearBid(_cachedAvatar, "AutoHarvest");
                 AutonomyManager.ReleaseLock(_cachedAvatar, "AutoHarvest");
             }
+            _visitedTargets.Clear();
         }
 
         private AvatarController GetAvatar()
@@ -86,15 +88,22 @@ namespace Simon.CozyGrove.AutoHarvest
                     if (target != null)
                     {
                         float dist = Vector3.Distance(avatar.transform.position, target.transform.position);
+                        int targetId = target.GetInstanceID();
+                        string targetName = target.name; // cache before yield — target may be destroyed after
+                        MelonLogger.Msg($"[AutoHarvest] Selected target: {targetName} id={targetId} dist={dist:F1} visited={_visitedTargets.Count}");
                         AutonomyManager.UpdateBid(avatar, "AutoHarvest", dist);
                         
                         yield return new WaitForSeconds(0.2f);
                         
-                        if (avatar == null || !avatar.gameObject.activeInHierarchy || 
+                        // Re-check target validity after yield (may have been collected/destroyed)
+                        if (target == null || !target.activeInHierarchy ||
+                            avatar == null || !avatar.gameObject.activeInHierarchy || 
                             IsAvatarBusy(avatar) || 
                             !AutonomyManager.IsMyBidLowest(avatar, "AutoHarvest", dist))
                         {
+                            MelonLogger.Msg($"[AutoHarvest] Skipping bid (gone/busy/outbid): {targetName}");
                             AutonomyManager.ClearBid(avatar, "AutoHarvest");
+                            _visitedTargets.Add(targetId); // still mark visited so we don't retry immediately
                             continue;
                         }
 
@@ -103,6 +112,9 @@ namespace Simon.CozyGrove.AutoHarvest
                         {
                             ShowBark(avatar, "AutoHarvest: ON");
                         }
+
+                        MelonLogger.Msg($"[AutoHarvest] Marking visited: {targetName} id={targetId}");
+                        _visitedTargets.Add(targetId);
 
                         AutonomyManager.ClearBid(avatar, "AutoHarvest");
                         AutonomyManager.AcquireLock(avatar, "AutoHarvest");
@@ -113,6 +125,9 @@ namespace Simon.CozyGrove.AutoHarvest
                     }
                     else
                     {
+                        // All unvisited targets exhausted — start a fresh sweep
+                        MelonLogger.Msg($"[AutoHarvest] Sweep complete — clearing {_visitedTargets.Count} visited. Starting new sweep.");
+                        _visitedTargets.Clear();
                         AutonomyManager.ClearBid(avatar, "AutoHarvest");
                     }
                 }
@@ -139,16 +154,25 @@ namespace Simon.CozyGrove.AutoHarvest
 
         private GameObject FindNearestTarget(AvatarController avatar)
         {
-            var collectables = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<CollectableItem>())
-                .Where(c => c.gameObject.activeInHierarchy)
-                .Where(c => IsTargetValid(c, avatar))
+            var allCollectables = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<CollectableItem>())
+                .Where(c => c.gameObject.activeInHierarchy).ToList();
+            var validCollectables = allCollectables
+                .Where(c => IsTargetValid(c, avatar)).ToList();
+            var unvisitedCollectables = validCollectables
+                .Where(c => !_visitedTargets.Contains(c.gameObject.GetInstanceID()))
                 .Select(c => c.gameObject);
 
-            var doobers = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<Doober>())
-                .Where(d => d.gameObject.activeInHierarchy)
+            MelonLogger.Msg($"[AutoHarvest] FindTarget: {allCollectables.Count} collectables active, {validCollectables.Count} valid, {validCollectables.Count(c => _visitedTargets.Contains(c.gameObject.GetInstanceID()))} visited");
+
+            var allDoobers = System.Linq.Enumerable.ToList(GameObject.FindObjectsOfType<Doober>())
+                .Where(d => d.gameObject.activeInHierarchy).ToList();
+            var unvisitedDoobers = allDoobers
+                .Where(d => !_visitedTargets.Contains(d.gameObject.GetInstanceID()))
                 .Select(d => d.gameObject);
 
-            var allTargets = collectables.Concat(doobers).ToList();
+            MelonLogger.Msg($"[AutoHarvest] FindTarget: {allDoobers.Count} doobers active, {allDoobers.Count(d => _visitedTargets.Contains(d.gameObject.GetInstanceID()))} visited");
+
+            var allTargets = unvisitedCollectables.Concat(unvisitedDoobers).ToList();
 
             if (allTargets.Count == 0) return null;
 
@@ -238,6 +262,8 @@ namespace Simon.CozyGrove.AutoHarvest
 
         private IEnumerator HandleTarget(GameObject target, AvatarController avatar)
         {
+            if (target == null || !target.activeInHierarchy) yield break;
+
             // Walk to target if too far
             float dist = Vector3.Distance(avatar.transform.position, target.transform.position);
             if (dist > 1.5f)
@@ -245,13 +271,17 @@ namespace Simon.CozyGrove.AutoHarvest
                 avatar.WalkToPosition(target.transform.position, true, true);
                 
                 float timeout = 5f;
-                while (Vector3.Distance(avatar.transform.position, target.transform.position) > 1.5f && timeout > 0)
+                while (timeout > 0)
                 {
                     if (!_isEnabled) yield break;
+                    if (target == null || !target.activeInHierarchy) yield break; // destroyed while walking
+                    if (Vector3.Distance(avatar.transform.position, target.transform.position) <= 1.5f) break;
                     timeout -= Time.deltaTime;
                     yield return null;
                 }
             }
+
+            if (target == null || !target.activeInHierarchy) yield break;
 
             // Double check tool again just in case it broke or was dropped
             if (!HasProperTool(target, avatar)) yield break;

@@ -63,7 +63,21 @@ namespace Simon.CozyGrove.SkippingShell
             return fallbackPos;
         }
 
-        private static Vector3 FindWaterEdge(Vector3 targetPos, Vector3 direction, float maxDist)
+        /// <summary>
+        /// Returns a point 'entryDepth' metres past the shore into water, along the
+        /// avatar→shell axis. Used by the throw code to calculate the arc vy so the
+        /// stone's first collision is with water, not land.
+        /// </summary>
+        public static Vector3 FindWaterEntryPoint(Vector3 avatarPos, Vector3 shellPos, float entryDepth = 1.5f)
+        {
+            Vector3 toAvatar = (avatarPos - shellPos).normalized;
+            Vector3 waterEdge = FindWaterEdge(shellPos, toAvatar, 100f);
+            // Step back from the shore edge toward the shell by entryDepth
+            Vector3 toShell = -toAvatar;
+            return waterEdge + toShell * entryDepth;
+        }
+
+        public static Vector3 FindWaterEdge(Vector3 targetPos, Vector3 direction, float maxDist)
         {
             // Binary search or stepped search from shell towards avatar to find where land starts
             Vector3 lastWater = targetPos;
