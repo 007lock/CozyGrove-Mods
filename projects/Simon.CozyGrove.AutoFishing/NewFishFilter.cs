@@ -15,7 +15,7 @@ namespace Simon.CozyGrove.AutoFishing
     public partial class MyMod
     {
         private static readonly string[] _valueRarityTags =
-            { "uncommon", "rare", "ultra_rare", "epic", "legendary", "unique" };
+            { "rare", "ultra_rare", "epic", "legendary", "unique" };
 
         private readonly Dictionary<string, bool> _lootTableNewCache = new Dictionary<string, bool>();
         private bool _resolvedTableThisTick = false;

@@ -243,6 +243,10 @@ namespace Simon.CozyGrove.SkippingShell
                     }
                     catch { }
 
+                    // Full 2D direction toward the shell. This game uses X/Y as the flat
+                    // 2D world plane (Z is always 0); there is no 3D height axis to zero out.
+                    // Zeroing direction.y strips the screen-Y component and causes the stone
+                    // to travel in the wrong direction.
                     Vector3 direction = (targetPos - spawnPos).normalized;
                     float distance = Vector3.Distance(spawnPos, targetPos);
 
@@ -255,22 +259,20 @@ namespace Simon.CozyGrove.SkippingShell
                                             (isProStone ? ProSpeedMultiplier : BasicSpeedMultiplier);
                     string stoneType = isSpecialStone ? "Special" : (isProStone ? "Pro" : "Basic");
 
-                    // Projectile physics: speed = multiplier * sqrt(distance * gravity)
                     float speed = speedMultiplier * Mathf.Sqrt(Mathf.Max(0f, distance) * Gravity);
 
                     int predictedSkips = CalculatePossibleSkips(distance, config, mass, speedMultiplier, out float impactForce, out float minDistanceForFirstSkip);
 
-                    // Build velocity directly toward target. Forcing extra Z arc caused
-                    // some longer throws to miss water and fail to skip.
                     Vector3 velocity = direction * speed;
 
-                    MelonLogger.Msg($"[SkippingController] Stone: {stoneType} | Distance: {distance:F1}m | Speed: {speed:F1} | ImpactForce: {impactForce:F2} | Mass: {mass:F2} | Mult: {speedMultiplier:F2} (PossibleSkips<=4: {predictedSkips}, MinDist1Skip: {minDistanceForFirstSkip:F1}m)");
+                    MelonLogger.Msg($"[SkippingController] Stone: {stoneType} | Dist: {distance:F1}m | Speed: {speed:F1} | ImpactForce: {impactForce:F2} | Mass: {mass:F2} | Mult: {speedMultiplier:F2} (Skips: {predictedSkips})");
 
                     thrownObj.wasThrownByAvatar = true;
-                    // bounceToDestination=false: let real physics run so the stone arcs into
-                    // the water and the game's skip physics carries it to the shell.
-                    // bounceToDestination=true was the bug — it guided the stone straight to
-                    // throwEndPosition (shell), bypassing the water surface entirely.
+                    // bounceToDestination=false: stone travels through 2D world space with real
+                    // physics velocity. When it crosses water tiles the game's collision handler
+                    // (CheckCollisionsProcessWater) fires and each water contact = one skip.
+                    // bounceToDestination=true animates the stone in a guided arc straight to
+                    // throwEndPosition, bypassing water collision entirely — always 0 skips.
                     thrownObj.ThrowWithVelocity(velocity, avatar, true, item, new Il2CppSystem.Nullable<Vector3>(spawnPos), false);
                 }
             }
